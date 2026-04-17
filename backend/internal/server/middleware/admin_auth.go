@@ -2,6 +2,7 @@
 package middleware
 
 import (
+	"context"
 	"crypto/subtle"
 	"errors"
 	"strings"
@@ -16,18 +17,21 @@ func NewAdminAuthMiddleware(
 	authService *service.AuthService,
 	userService *service.UserService,
 	settingService *service.SettingService,
+	managedNodeAPIKeyService *service.ManagedNodeAPIKeyService,
 ) AdminAuthMiddleware {
-	return AdminAuthMiddleware(adminAuth(authService, userService, settingService))
+	return AdminAuthMiddleware(adminAuth(authService, userService, settingService, managedNodeAPIKeyService))
 }
 
 // adminAuth 管理员认证中间件实现
-// 支持两种认证方式（通过不同的 header 区分）：
+// 支持三种认证方式（通过不同的 header 区分）：
 // 1. Admin API Key: x-api-key: <admin-api-key>
-// 2. JWT Token: Authorization: Bearer <jwt-token> (需要管理员角色)
+// 2. Managed Node API Key: x-api-key: <managed-node-api-key>
+// 3. JWT Token: Authorization: Bearer <jwt-token> (需要管理员角色)
 func adminAuth(
 	authService *service.AuthService,
 	userService *service.UserService,
 	settingService *service.SettingService,
+	managedNodeAPIKeyService *service.ManagedNodeAPIKeyService,
 ) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// WebSocket upgrade requests cannot set Authorization headers in browsers.
@@ -47,7 +51,7 @@ func adminAuth(
 		// 检查 x-api-key header（Admin API Key 认证）
 		apiKey := c.GetHeader("x-api-key")
 		if apiKey != "" {
-			if !validateAdminAPIKey(c, apiKey, settingService, userService) {
+			if !validateAPIKeyForAdmin(c, apiKey, settingService, managedNodeAPIKeyService, userService) {
 				return
 			}
 			c.Next()
@@ -115,25 +119,60 @@ func extractJWTFromWebSocketSubprotocol(c *gin.Context) string {
 	return ""
 }
 
-// validateAdminAPIKey 验证管理员 API Key
-func validateAdminAPIKey(
+// validateAPIKeyForAdmin validates either the legacy global admin API key or a managed-node API key.
+func validateAPIKeyForAdmin(
 	c *gin.Context,
 	key string,
 	settingService *service.SettingService,
+	managedNodeAPIKeyService *service.ManagedNodeAPIKeyService,
 	userService *service.UserService,
 ) bool {
-	storedKey, err := settingService.GetAdminAPIKey(c.Request.Context())
+	match, err := matchesAdminAPIKey(c.Request.Context(), key, settingService)
 	if err != nil {
 		AbortWithError(c, 500, "INTERNAL_ERROR", "Internal server error")
 		return false
 	}
-
-	// 未配置或不匹配，统一返回相同错误（避免信息泄露）
-	if storedKey == "" || subtle.ConstantTimeCompare([]byte(key), []byte(storedKey)) != 1 {
-		AbortWithError(c, 401, "INVALID_ADMIN_KEY", "Invalid admin API key")
-		return false
+	if match {
+		return attachAdminContext(c, userService, "admin_api_key")
 	}
 
+	if managedNodeAPIKeyService != nil {
+		managedKey, err := managedNodeAPIKeyService.AuthenticateKey(c.Request.Context(), key, service.ManagedNodeAPIKeyUsageInput{
+			IP:     c.ClientIP(),
+			Method: c.Request.Method,
+			Path:   c.Request.URL.Path,
+		})
+		if err != nil {
+			AbortWithError(c, 500, "INTERNAL_ERROR", "Internal server error")
+			return false
+		}
+		if managedKey != nil {
+			c.Set("managed_node_api_key_id", managedKey.ID)
+			c.Set("managed_node_api_key_name", managedKey.Name)
+			return attachAdminContext(c, userService, "managed_node_api_key")
+		}
+	}
+
+	// 未配置或不匹配，统一返回相同错误（避免信息泄露）
+	AbortWithError(c, 401, "INVALID_ADMIN_KEY", "Invalid admin API key")
+	return false
+}
+
+func matchesAdminAPIKey(ctx context.Context, key string, settingService *service.SettingService) (bool, error) {
+	if settingService == nil {
+		return false, nil
+	}
+	storedKey, err := settingService.GetAdminAPIKey(ctx)
+	if err != nil {
+		return false, err
+	}
+	if storedKey == "" {
+		return false, nil
+	}
+	return subtle.ConstantTimeCompare([]byte(key), []byte(storedKey)) == 1, nil
+}
+
+func attachAdminContext(c *gin.Context, userService *service.UserService, authMethod string) bool {
 	// 获取真实的管理员用户
 	admin, err := userService.GetFirstAdmin(c.Request.Context())
 	if err != nil {
@@ -146,7 +185,7 @@ func validateAdminAPIKey(
 		Concurrency: admin.Concurrency,
 	})
 	c.Set(string(ContextKeyUserRole), admin.Role)
-	c.Set("auth_method", "admin_api_key")
+	c.Set("auth_method", authMethod)
 	return true
 }
 

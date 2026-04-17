@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
@@ -42,7 +43,7 @@ func TestAdminAuthJWTValidatesTokenVersion(t *testing.T) {
 	userService := service.NewUserService(userRepo, nil, nil, nil)
 
 	router := gin.New()
-	router.Use(gin.HandlerFunc(NewAdminAuthMiddleware(authService, userService, nil)))
+	router.Use(gin.HandlerFunc(NewAdminAuthMiddleware(authService, userService, nil, nil)))
 	router.GET("/t", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	})
@@ -122,8 +123,58 @@ func TestAdminAuthJWTValidatesTokenVersion(t *testing.T) {
 	})
 }
 
+func TestAdminAuthManagedNodeAPIKeyAllowsAccess(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	admin := &service.User{
+		ID:          1,
+		Email:       "admin@example.com",
+		Role:        service.RoleAdmin,
+		Status:      service.StatusActive,
+		Concurrency: 1,
+	}
+
+	userRepo := &stubUserRepo{
+		getFirstAdmin: func(ctx context.Context) (*service.User, error) {
+			clone := *admin
+			return &clone, nil
+		},
+	}
+	userService := service.NewUserService(userRepo, nil, nil, nil)
+	managedNodeKeyService := service.NewManagedNodeAPIKeyService(&managedNodeAPIKeyRepoStub{
+		authenticateActiveByHash: func(ctx context.Context, keyHash, ip string, usedAt time.Time, audit *service.ManagedNodeAPIKeyAudit) (*service.ManagedNodeAPIKey, error) {
+			return &service.ManagedNodeAPIKey{
+				ID:     7,
+				Name:   "node-a",
+				Status: service.ManagedNodeAPIKeyStatusActive,
+			}, nil
+		},
+	})
+
+	router := gin.New()
+	router.Use(gin.HandlerFunc(NewAdminAuthMiddleware(nil, userService, nil, managedNodeKeyService)))
+	router.GET("/t", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"auth_method":               c.GetString("auth_method"),
+			"managed_node_api_key_id":   c.GetInt64("managed_node_api_key_id"),
+			"managed_node_api_key_name": c.GetString("managed_node_api_key_name"),
+		})
+	})
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/t", nil)
+	req.Header.Set("x-api-key", service.ManagedNodeAPIKeyPrefix+"0123456789abcdef")
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Contains(t, w.Body.String(), "managed_node_api_key")
+	require.Contains(t, w.Body.String(), "\"managed_node_api_key_id\":7")
+	require.Contains(t, w.Body.String(), "node-a")
+}
+
 type stubUserRepo struct {
-	getByID func(ctx context.Context, id int64) (*service.User, error)
+	getByID       func(ctx context.Context, id int64) (*service.User, error)
+	getFirstAdmin func(ctx context.Context) (*service.User, error)
 }
 
 func (s *stubUserRepo) Create(ctx context.Context, user *service.User) error {
@@ -142,7 +193,10 @@ func (s *stubUserRepo) GetByEmail(ctx context.Context, email string) (*service.U
 }
 
 func (s *stubUserRepo) GetFirstAdmin(ctx context.Context) (*service.User, error) {
-	panic("unexpected GetFirstAdmin call")
+	if s.getFirstAdmin == nil {
+		panic("GetFirstAdmin not stubbed")
+	}
+	return s.getFirstAdmin(ctx)
 }
 
 func (s *stubUserRepo) Update(ctx context.Context, user *service.User) error {
@@ -199,4 +253,31 @@ func (s *stubUserRepo) EnableTotp(ctx context.Context, userID int64) error {
 
 func (s *stubUserRepo) DisableTotp(ctx context.Context, userID int64) error {
 	panic("unexpected DisableTotp call")
+}
+
+type managedNodeAPIKeyRepoStub struct {
+	authenticateActiveByHash func(ctx context.Context, keyHash, ip string, usedAt time.Time, audit *service.ManagedNodeAPIKeyAudit) (*service.ManagedNodeAPIKey, error)
+}
+
+func (s *managedNodeAPIKeyRepoStub) Create(ctx context.Context, key *service.ManagedNodeAPIKey, audit *service.ManagedNodeAPIKeyAudit) error {
+	panic("unexpected Create call")
+}
+
+func (s *managedNodeAPIKeyRepoStub) List(ctx context.Context) ([]service.ManagedNodeAPIKey, error) {
+	panic("unexpected List call")
+}
+
+func (s *managedNodeAPIKeyRepoStub) AuthenticateActiveByHash(ctx context.Context, keyHash, ip string, usedAt time.Time, audit *service.ManagedNodeAPIKeyAudit) (*service.ManagedNodeAPIKey, error) {
+	if s.authenticateActiveByHash == nil {
+		panic("AuthenticateActiveByHash not stubbed")
+	}
+	return s.authenticateActiveByHash(ctx, keyHash, ip, usedAt, audit)
+}
+
+func (s *managedNodeAPIKeyRepoStub) Revoke(ctx context.Context, keyID int64, revokedBy *int64, revokedAt time.Time, audit *service.ManagedNodeAPIKeyAudit) (*service.ManagedNodeAPIKey, error) {
+	panic("unexpected Revoke call")
+}
+
+func (s *managedNodeAPIKeyRepoStub) ListAudits(ctx context.Context, keyID int64, limit int) ([]service.ManagedNodeAPIKeyAudit, error) {
+	panic("unexpected ListAudits call")
 }
