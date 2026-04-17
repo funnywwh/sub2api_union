@@ -265,3 +265,6 @@ const (
 
 // AdminAPIKeyPrefix is the prefix for admin API keys (distinct from user "sk-" keys).
 const AdminAPIKeyPrefix = "admin-"
+
+// ManagedNodeAPIKeyPrefix is the prefix for managed-node API keys.
+const ManagedNodeAPIKeyPrefix = "mnode-"

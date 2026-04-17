@@ -45,23 +45,25 @@ func scopesContainOpenID(scopes string) bool {
 
 // SettingHandler 系统设置处理器
 type SettingHandler struct {
-	settingService       *service.SettingService
-	emailService         *service.EmailService
-	turnstileService     *service.TurnstileService
-	opsService           *service.OpsService
-	paymentConfigService *service.PaymentConfigService
-	paymentService       *service.PaymentService
+	settingService           *service.SettingService
+	managedNodeAPIKeyService *service.ManagedNodeAPIKeyService
+	emailService             *service.EmailService
+	turnstileService         *service.TurnstileService
+	opsService               *service.OpsService
+	paymentConfigService     *service.PaymentConfigService
+	paymentService           *service.PaymentService
 }
 
 // NewSettingHandler 创建系统设置处理器
-func NewSettingHandler(settingService *service.SettingService, emailService *service.EmailService, turnstileService *service.TurnstileService, opsService *service.OpsService, paymentConfigService *service.PaymentConfigService, paymentService *service.PaymentService) *SettingHandler {
+func NewSettingHandler(settingService *service.SettingService, managedNodeAPIKeyService *service.ManagedNodeAPIKeyService, emailService *service.EmailService, turnstileService *service.TurnstileService, opsService *service.OpsService, paymentConfigService *service.PaymentConfigService, paymentService *service.PaymentService) *SettingHandler {
 	return &SettingHandler{
-		settingService:       settingService,
-		emailService:         emailService,
-		turnstileService:     turnstileService,
-		opsService:           opsService,
-		paymentConfigService: paymentConfigService,
-		paymentService:       paymentService,
+		settingService:           settingService,
+		managedNodeAPIKeyService: managedNodeAPIKeyService,
+		emailService:             emailService,
+		turnstileService:         turnstileService,
+		opsService:               opsService,
+		paymentConfigService:     paymentConfigService,
+		paymentService:           paymentService,
 	}
 }
 
@@ -1129,11 +1131,16 @@ func (h *SettingHandler) auditSettingsUpdate(c *gin.Context, before *service.Sys
 
 	subject, _ := middleware.GetAuthSubjectFromContext(c)
 	role, _ := middleware.GetUserRoleFromContext(c)
+	managedNodeAPIKeyID, _ := c.Get("managed_node_api_key_id")
+	managedNodeAPIKeyName := c.GetString("managed_node_api_key_name")
 	slog.Info("settings updated",
 		"audit", true,
 		"user_id", subject.UserID,
 		"role", role,
 		"changed", changed,
+		"auth_method", c.GetString("auth_method"),
+		"managed_node_api_key_id", managedNodeAPIKeyID,
+		"managed_node_api_key_name", managedNodeAPIKeyName,
 	)
 }
 

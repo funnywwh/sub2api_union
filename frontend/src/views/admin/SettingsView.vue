@@ -166,7 +166,202 @@
             </div>
           </div>
         </div>
-        </div><!-- /Tab: Security — Admin API Key -->
+
+        <div class="card">
+          <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
+            <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+              {{ t('admin.settings.managedNodeKeys.title') }}
+            </h2>
+            <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+              {{ t('admin.settings.managedNodeKeys.description') }}
+            </p>
+          </div>
+          <div class="space-y-5 p-6">
+            <div class="grid gap-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
+              <div class="space-y-4">
+                <div>
+                  <label class="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    {{ t('admin.settings.managedNodeKeys.name') }}
+                  </label>
+                  <input
+                    v-model="managedNodeApiKeyName"
+                    type="text"
+                    maxlength="100"
+                    class="input"
+                    :placeholder="t('admin.settings.managedNodeKeys.namePlaceholder')"
+                  />
+                </div>
+                <div>
+                  <label class="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                    {{ t('admin.settings.managedNodeKeys.descriptionLabel') }}
+                  </label>
+                  <textarea
+                    v-model="managedNodeApiKeyDescription"
+                    rows="3"
+                    maxlength="1000"
+                    class="input"
+                    :placeholder="t('admin.settings.managedNodeKeys.descriptionPlaceholder')"
+                  ></textarea>
+                </div>
+              </div>
+              <button
+                type="button"
+                @click="createManagedNodeApiKey"
+                :disabled="managedNodeApiKeyOperating"
+                class="btn btn-primary btn-sm"
+              >
+                {{ managedNodeApiKeyOperating
+                  ? t('admin.settings.managedNodeKeys.creating')
+                  : t('admin.settings.managedNodeKeys.create') }}
+              </button>
+            </div>
+
+            <div
+              v-if="newManagedNodeApiKey"
+              class="space-y-3 rounded-lg border border-green-200 bg-green-50 p-4 dark:border-green-800 dark:bg-green-900/20"
+            >
+              <p class="text-sm font-medium text-green-700 dark:text-green-300">
+                {{ t('admin.settings.managedNodeKeys.keyWarning', { name: newManagedNodeApiKeyName }) }}
+              </p>
+              <div class="flex items-center gap-2">
+                <code
+                  class="flex-1 select-all break-all rounded border border-green-300 bg-white px-3 py-2 font-mono text-sm dark:border-green-700 dark:bg-dark-800"
+                >
+                  {{ newManagedNodeApiKey }}
+                </code>
+                <button
+                  type="button"
+                  @click="copyManagedNodeApiKey"
+                  class="btn btn-primary btn-sm flex-shrink-0"
+                >
+                  {{ t('admin.settings.managedNodeKeys.copyKey') }}
+                </button>
+              </div>
+              <p class="text-xs text-green-600 dark:text-green-400">
+                {{ t('admin.settings.managedNodeKeys.usage') }}
+              </p>
+            </div>
+
+            <div v-if="managedNodeApiKeysLoading" class="flex items-center gap-2 text-gray-500">
+              <div class="h-4 w-4 animate-spin rounded-full border-b-2 border-primary-600"></div>
+              {{ t('common.loading') }}
+            </div>
+
+            <div v-else-if="managedNodeApiKeys.length === 0" class="text-sm text-gray-500 dark:text-gray-400">
+              {{ t('admin.settings.managedNodeKeys.empty') }}
+            </div>
+
+            <div v-else class="space-y-4">
+              <div
+                v-for="item in managedNodeApiKeys"
+                :key="item.id"
+                class="rounded-xl border border-gray-200 p-4 dark:border-dark-600"
+              >
+                <div class="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                  <div class="space-y-2">
+                    <div class="flex items-center gap-2">
+                      <h3 class="font-medium text-gray-900 dark:text-white">
+                        {{ item.name }}
+                      </h3>
+                      <span
+                        :class="[
+                          'rounded-full px-2 py-0.5 text-xs font-medium',
+                          item.status === 'active'
+                            ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300'
+                            : 'bg-gray-100 text-gray-600 dark:bg-dark-700 dark:text-gray-300',
+                        ]"
+                      >
+                        {{ item.status === 'active'
+                          ? t('admin.settings.managedNodeKeys.statusActive')
+                          : t('admin.settings.managedNodeKeys.statusRevoked') }}
+                      </span>
+                    </div>
+                    <code
+                      class="inline-block rounded bg-gray-100 px-2 py-1 font-mono text-sm text-gray-900 dark:bg-dark-700 dark:text-gray-100"
+                    >
+                      {{ item.masked_key }}
+                    </code>
+                    <p v-if="item.description" class="text-sm text-gray-500 dark:text-gray-400">
+                      {{ item.description }}
+                    </p>
+                    <div class="grid gap-2 text-xs text-gray-500 dark:text-gray-400 md:grid-cols-2">
+                      <div>{{ t('admin.settings.managedNodeKeys.createdAt') }}: {{ formatManagedNodeApiKeyTime(item.created_at) }}</div>
+                      <div>{{ t('admin.settings.managedNodeKeys.lastUsedAt') }}: {{ formatManagedNodeApiKeyTime(item.last_used_at) }}</div>
+                      <div>{{ t('admin.settings.managedNodeKeys.lastUsedIp') }}: {{ item.last_used_ip || t('common.never') }}</div>
+                      <div v-if="item.revoked_at">{{ t('admin.settings.managedNodeKeys.revokedAt') }}: {{ formatManagedNodeApiKeyTime(item.revoked_at) }}</div>
+                    </div>
+                  </div>
+                  <div class="flex gap-2">
+                    <button
+                      type="button"
+                      class="btn btn-secondary btn-sm"
+                      @click="toggleManagedNodeApiKeyAudits(item.id)"
+                    >
+                      {{ selectedManagedNodeApiKeyId === item.id
+                        ? t('admin.settings.managedNodeKeys.hideAudit')
+                        : t('admin.settings.managedNodeKeys.viewAudit') }}
+                    </button>
+                    <button
+                      v-if="item.status === 'active'"
+                      type="button"
+                      class="btn btn-secondary btn-sm text-red-600 hover:text-red-700 dark:text-red-400"
+                      :disabled="managedNodeApiKeyOperating"
+                      @click="revokeManagedNodeApiKey(item)"
+                    >
+                      {{ t('admin.settings.managedNodeKeys.revoke') }}
+                    </button>
+                  </div>
+                </div>
+
+                <div
+                  v-if="selectedManagedNodeApiKeyId === item.id"
+                  class="mt-4 space-y-3 border-t border-gray-100 pt-4 dark:border-dark-700"
+                >
+                  <div class="text-sm font-medium text-gray-800 dark:text-gray-200">
+                    {{ t('admin.settings.managedNodeKeys.auditTitle') }}
+                  </div>
+                  <div v-if="managedNodeApiKeyAuditsLoading" class="flex items-center gap-2 text-gray-500">
+                    <div class="h-4 w-4 animate-spin rounded-full border-b-2 border-primary-600"></div>
+                    {{ t('common.loading') }}
+                  </div>
+                  <div v-else-if="managedNodeApiKeyAudits.length === 0" class="text-sm text-gray-500 dark:text-gray-400">
+                    {{ t('admin.settings.managedNodeKeys.auditEmpty') }}
+                  </div>
+                  <div v-else class="space-y-2">
+                    <div
+                      v-for="audit in managedNodeApiKeyAudits"
+                      :key="audit.id"
+                      class="rounded-lg bg-gray-50 p-3 text-sm dark:bg-dark-800"
+                    >
+                      <div class="flex flex-wrap items-center gap-2">
+                        <span class="font-medium text-gray-900 dark:text-white">
+                          {{ audit.action === 'created'
+                            ? t('admin.settings.managedNodeKeys.auditActionCreated')
+                            : audit.action === 'used'
+                              ? t('admin.settings.managedNodeKeys.auditActionUsed')
+                              : t('admin.settings.managedNodeKeys.auditActionRevoked') }}
+                        </span>
+                        <span class="text-xs text-gray-500 dark:text-gray-400">
+                          {{ formatManagedNodeApiKeyTime(audit.created_at) }}
+                        </span>
+                        <span v-if="audit.operator_user_id" class="text-xs text-gray-500 dark:text-gray-400">
+                          {{ t('admin.settings.managedNodeKeys.operator') }} #{{ audit.operator_user_id }}
+                        </span>
+                        <span v-if="audit.auth_method" class="text-xs text-gray-500 dark:text-gray-400">
+                          {{ audit.auth_method }}
+                        </span>
+                      </div>
+                      <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                        {{ formatManagedNodeApiKeyAuditDetail(audit) }}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        </div><!-- /Tab: Security -->
 
         <!-- Tab: Gateway -->
         <div v-show="activeTab === 'gateway'" class="space-y-6">
@@ -2834,6 +3029,8 @@ import type {
   WebSearchEmulationConfig,
   WebSearchProviderConfig,
   WebSearchTestResult,
+  ManagedNodeApiKey,
+  ManagedNodeApiKeyAudit,
 } from '@/api/admin/settings'
 import type { AdminGroup, Proxy, NotifyEmailEntry } from '@/types'
 import type { ProviderInstance } from '@/types/payment'
@@ -2894,6 +3091,16 @@ const adminApiKeyExists = ref(false)
 const adminApiKeyMasked = ref('')
 const adminApiKeyOperating = ref(false)
 const newAdminApiKey = ref('')
+const managedNodeApiKeysLoading = ref(true)
+const managedNodeApiKeyOperating = ref(false)
+const managedNodeApiKeys = ref<ManagedNodeApiKey[]>([])
+const managedNodeApiKeyName = ref('')
+const managedNodeApiKeyDescription = ref('')
+const newManagedNodeApiKey = ref('')
+const newManagedNodeApiKeyName = ref('')
+const selectedManagedNodeApiKeyId = ref<number | null>(null)
+const managedNodeApiKeyAuditsLoading = ref(false)
+const managedNodeApiKeyAudits = ref<ManagedNodeApiKeyAudit[]>([])
 const subscriptionGroups = ref<AdminGroup[]>([])
 
 // Overload Cooldown (529) 状态
@@ -3805,6 +4012,129 @@ function copyNewKey() {
     })
 }
 
+function formatManagedNodeApiKeyTime(value?: string | null): string {
+  if (!value) return t('common.never')
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return new Intl.DateTimeFormat(locale.value === 'zh' ? 'zh-CN' : 'en-US', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  }).format(date)
+}
+
+function formatManagedNodeApiKeyAuditDetail(audit: ManagedNodeApiKeyAudit): string {
+  const detail = audit.detail || {}
+  if (audit.action === 'created') {
+    const maskedKey = typeof detail.masked_key === 'string' ? detail.masked_key : ''
+    return maskedKey || t('admin.settings.managedNodeKeys.auditCreated')
+  }
+  if (audit.action === 'used') {
+    const method = typeof detail.method === 'string' ? detail.method.trim() : ''
+    const path = typeof detail.path === 'string' ? detail.path.trim() : ''
+    const ip = typeof detail.ip === 'string' ? detail.ip.trim() : ''
+    return [method, path, ip].filter(Boolean).join(' ')
+  }
+  if (audit.action === 'revoked') {
+    const reason = typeof detail.reason === 'string' ? detail.reason.trim() : ''
+    return reason || t('admin.settings.managedNodeKeys.noReason')
+  }
+  try {
+    return JSON.stringify(detail)
+  } catch {
+    return ''
+  }
+}
+
+async function loadManagedNodeApiKeys() {
+  managedNodeApiKeysLoading.value = true
+  try {
+    managedNodeApiKeys.value = await adminAPI.settings.listManagedNodeApiKeys()
+  } catch (error: unknown) {
+    appStore.showError(extractApiErrorMessage(error, t('common.error')))
+  } finally {
+    managedNodeApiKeysLoading.value = false
+  }
+}
+
+async function createManagedNodeApiKey() {
+  const name = managedNodeApiKeyName.value.trim()
+  if (!name) {
+    appStore.showError(t('admin.settings.managedNodeKeys.nameRequired'))
+    return
+  }
+
+  managedNodeApiKeyOperating.value = true
+  try {
+    const result = await adminAPI.settings.createManagedNodeApiKey({
+      name,
+      description: managedNodeApiKeyDescription.value.trim(),
+    })
+    newManagedNodeApiKey.value = result.key
+    newManagedNodeApiKeyName.value = result.item.name
+    managedNodeApiKeys.value = [result.item, ...managedNodeApiKeys.value]
+    managedNodeApiKeyName.value = ''
+    managedNodeApiKeyDescription.value = ''
+    selectedManagedNodeApiKeyId.value = result.item.id
+    managedNodeApiKeyAudits.value = []
+    appStore.showSuccess(t('admin.settings.managedNodeKeys.keyGenerated'))
+  } catch (error: unknown) {
+    appStore.showError(extractApiErrorMessage(error, t('common.error')))
+  } finally {
+    managedNodeApiKeyOperating.value = false
+  }
+}
+
+async function copyManagedNodeApiKey() {
+  try {
+    await copyToClipboard(newManagedNodeApiKey.value, t('admin.settings.managedNodeKeys.keyCopied'))
+  } catch {
+    appStore.showError(t('common.copyFailed'))
+  }
+}
+
+async function revokeManagedNodeApiKey(key: ManagedNodeApiKey) {
+  if (!confirm(t('admin.settings.managedNodeKeys.revokeConfirm', { name: key.name }))) return
+
+  const reason = window.prompt(t('admin.settings.managedNodeKeys.revokeReasonPrompt'), '') || ''
+
+  managedNodeApiKeyOperating.value = true
+  try {
+    const updated = await adminAPI.settings.revokeManagedNodeApiKey(key.id, reason.trim() || undefined)
+    managedNodeApiKeys.value = managedNodeApiKeys.value.map((item) =>
+      item.id === updated.id ? updated : item
+    )
+    if (selectedManagedNodeApiKeyId.value === updated.id) {
+      await loadManagedNodeApiKeyAudits(updated.id)
+    }
+    appStore.showSuccess(t('admin.settings.managedNodeKeys.keyRevoked'))
+  } catch (error: unknown) {
+    appStore.showError(extractApiErrorMessage(error, t('common.error')))
+  } finally {
+    managedNodeApiKeyOperating.value = false
+  }
+}
+
+async function loadManagedNodeApiKeyAudits(keyId: number) {
+  managedNodeApiKeyAuditsLoading.value = true
+  selectedManagedNodeApiKeyId.value = keyId
+  try {
+    managedNodeApiKeyAudits.value = await adminAPI.settings.listManagedNodeApiKeyAudits(keyId)
+  } catch (error: unknown) {
+    appStore.showError(extractApiErrorMessage(error, t('common.error')))
+  } finally {
+    managedNodeApiKeyAuditsLoading.value = false
+  }
+}
+
+async function toggleManagedNodeApiKeyAudits(keyId: number) {
+  if (selectedManagedNodeApiKeyId.value === keyId) {
+    selectedManagedNodeApiKeyId.value = null
+    managedNodeApiKeyAudits.value = []
+    return
+  }
+  await loadManagedNodeApiKeyAudits(keyId)
+}
+
 // Overload Cooldown 方法
 async function loadOverloadCooldownSettings() {
   overloadCooldownLoading.value = true
@@ -4196,6 +4526,7 @@ onMounted(() => {
   loadSettings()
   loadSubscriptionGroups()
   loadAdminApiKey()
+  loadManagedNodeApiKeys()
   loadOverloadCooldownSettings()
   loadStreamTimeoutSettings()
   loadRectifierSettings()

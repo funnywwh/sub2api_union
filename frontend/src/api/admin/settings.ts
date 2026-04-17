@@ -355,6 +355,73 @@ export async function deleteAdminApiKey(): Promise<{ message: string }> {
   return data
 }
 
+export interface ManagedNodeApiKey {
+  id: number
+  name: string
+  description: string
+  masked_key: string
+  status: 'active' | 'revoked'
+  created_by?: number | null
+  revoked_by?: number | null
+  last_used_at?: string | null
+  last_used_ip?: string
+  created_at: string
+  updated_at: string
+  revoked_at?: string | null
+}
+
+export interface ManagedNodeApiKeyAudit {
+  id: number
+  action: string
+  operator_user_id?: number | null
+  operator_role?: string
+  auth_method?: string
+  detail: Record<string, unknown>
+  created_at: string
+}
+
+export interface CreateManagedNodeApiKeyRequest {
+  name: string
+  description?: string
+}
+
+export async function listManagedNodeApiKeys(): Promise<ManagedNodeApiKey[]> {
+  const { data } = await apiClient.get<ManagedNodeApiKey[]>('/admin/settings/managed-node-keys')
+  return data
+}
+
+export async function createManagedNodeApiKey(
+  request: CreateManagedNodeApiKeyRequest
+): Promise<{ key: string; item: ManagedNodeApiKey }> {
+  const { data } = await apiClient.post<{ key: string; item: ManagedNodeApiKey }>(
+    '/admin/settings/managed-node-keys',
+    request
+  )
+  return data
+}
+
+export async function revokeManagedNodeApiKey(
+  id: number,
+  reason?: string
+): Promise<ManagedNodeApiKey> {
+  const { data } = await apiClient.post<ManagedNodeApiKey>(
+    `/admin/settings/managed-node-keys/${id}/revoke`,
+    reason ? { reason } : {}
+  )
+  return data
+}
+
+export async function listManagedNodeApiKeyAudits(
+  id: number,
+  limit = 50
+): Promise<ManagedNodeApiKeyAudit[]> {
+  const { data } = await apiClient.get<ManagedNodeApiKeyAudit[]>(
+    `/admin/settings/managed-node-keys/${id}/audits`,
+    { params: { limit } }
+  )
+  return data
+}
+
 // ==================== Overload Cooldown Settings ====================
 
 /**
@@ -565,6 +632,10 @@ export const settingsAPI = {
   getAdminApiKey,
   regenerateAdminApiKey,
   deleteAdminApiKey,
+  listManagedNodeApiKeys,
+  createManagedNodeApiKey,
+  revokeManagedNodeApiKey,
+  listManagedNodeApiKeyAudits,
   getOverloadCooldownSettings,
   updateOverloadCooldownSettings,
   getStreamTimeoutSettings,

@@ -395,6 +395,11 @@ func registerSettingsRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		adminSettings.GET("/admin-api-key", h.Admin.Setting.GetAdminAPIKey)
 		adminSettings.POST("/admin-api-key/regenerate", h.Admin.Setting.RegenerateAdminAPIKey)
 		adminSettings.DELETE("/admin-api-key", h.Admin.Setting.DeleteAdminAPIKey)
+		// Managed Node API Key 管理
+		adminSettings.GET("/managed-node-keys", h.Admin.Setting.ListManagedNodeAPIKeys)
+		adminSettings.POST("/managed-node-keys", h.Admin.Setting.CreateManagedNodeAPIKey)
+		adminSettings.POST("/managed-node-keys/:id/revoke", h.Admin.Setting.RevokeManagedNodeAPIKey)
+		adminSettings.GET("/managed-node-keys/:id/audits", h.Admin.Setting.ListManagedNodeAPIKeyAudits)
 		// 529过载冷却配置
 		adminSettings.GET("/overload-cooldown", h.Admin.Setting.GetOverloadCooldownSettings)
 		adminSettings.PUT("/overload-cooldown", h.Admin.Setting.UpdateOverloadCooldownSettings)
