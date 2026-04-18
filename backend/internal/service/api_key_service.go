@@ -43,6 +43,8 @@ const (
 	apiKeyLastUsedMinTouch = 30 * time.Second
 	// DB 写失败后的短退避，避免请求路径持续同步重试造成写风暴与高延迟。
 	apiKeyLastUsedFailBackoff = 5 * time.Second
+	webChatAPIKeyNamePrefix   = "Web Chat"
+	webChatAPIKeySearchLimit  = 1000
 )
 
 type APIKeyRepository interface {
@@ -804,6 +806,68 @@ func (s *APIKeyService) GetUserGroupRates(ctx context.Context, userID int64) (ma
 		return nil, fmt.Errorf("get user group rates: %w", err)
 	}
 	return rates, nil
+}
+
+func buildWebChatAPIKeyName(group *Group) string {
+	if group == nil {
+		return webChatAPIKeyNamePrefix
+	}
+
+	name := strings.TrimSpace(group.Name)
+	if name == "" {
+		return fmt.Sprintf("%s #%d", webChatAPIKeyNamePrefix, group.ID)
+	}
+
+	return fmt.Sprintf("%s - %s", webChatAPIKeyNamePrefix, name)
+}
+
+// GetOrCreateWebChatAPIKey ensures the logged-in user has an active key that can
+// be used internally by the browser chat flow for the specified group.
+func (s *APIKeyService) GetOrCreateWebChatAPIKey(ctx context.Context, userID, groupID int64) (*APIKey, error) {
+	params := pagination.PaginationParams{
+		Page:      1,
+		PageSize:  webChatAPIKeySearchLimit,
+		SortBy:    "created_at",
+		SortOrder: "desc",
+	}
+	filters := APIKeyListFilters{
+		Search:  webChatAPIKeyNamePrefix,
+		GroupID: &groupID,
+	}
+
+	keys, _, err := s.apiKeyRepo.ListByUserID(ctx, userID, params, filters)
+	if err != nil {
+		return nil, fmt.Errorf("list api keys: %w", err)
+	}
+
+	for i := range keys {
+		key := keys[i]
+		if key.GroupID == nil || *key.GroupID != groupID {
+			continue
+		}
+		if !strings.HasPrefix(strings.TrimSpace(key.Name), webChatAPIKeyNamePrefix) {
+			continue
+		}
+		if key.Status != StatusAPIKeyActive || key.IsExpired() || key.IsQuotaExhausted() {
+			continue
+		}
+		return s.GetByID(ctx, key.ID)
+	}
+
+	group, err := s.groupRepo.GetByID(ctx, groupID)
+	if err != nil {
+		return nil, fmt.Errorf("get group: %w", err)
+	}
+
+	created, err := s.Create(ctx, userID, CreateAPIKeyRequest{
+		Name:    buildWebChatAPIKeyName(group),
+		GroupID: &groupID,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return s.GetByID(ctx, created.ID)
 }
 
 // CheckAPIKeyQuotaAndExpiry checks if the API key is valid for use (not expired, quota not exhausted)
