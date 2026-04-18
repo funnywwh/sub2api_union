@@ -78,6 +78,7 @@ func RegisterAuthRoutes(
 			}),
 			h.Auth.CompleteOIDCOAuthRegistration,
 		)
+		auth.POST("/federation/exchange", h.Auth.ExchangeFederationTicket)
 	}
 
 	// 公开设置（无需认证）

@@ -422,6 +422,85 @@ export async function listManagedNodeApiKeyAudits(
   return data
 }
 
+export interface ManagedNode {
+  id: string
+  name: string
+  description: string
+  scheme: 'http' | 'https'
+  host: string
+  port: number
+  masked_key: string
+  created_at: string
+  updated_at: string
+}
+
+export interface ManagedNodeRemoteInfo {
+  site_name: string
+  auth_method?: string
+  frontend_url?: string
+  managed_node_api_key_id?: number
+}
+
+export interface ManagedNodeJumpLinkResponse {
+  login_url: string
+  expires_in: number
+  site_name?: string
+}
+
+export interface CreateManagedNodeRequest {
+  name: string
+  description?: string
+  scheme?: 'http' | 'https'
+  host: string
+  port: number
+  api_key: string
+}
+
+export interface UpdateManagedNodeRequest {
+  name: string
+  description?: string
+  scheme?: 'http' | 'https'
+  host: string
+  port: number
+  api_key?: string
+}
+
+export async function listManagedNodes(): Promise<ManagedNode[]> {
+  const { data } = await apiClient.get<ManagedNode[]>('/admin/settings/managed-nodes')
+  return data
+}
+
+export async function createManagedNode(request: CreateManagedNodeRequest): Promise<ManagedNode> {
+  const { data } = await apiClient.post<ManagedNode>('/admin/settings/managed-nodes', request)
+  return data
+}
+
+export async function updateManagedNode(id: string, request: UpdateManagedNodeRequest): Promise<ManagedNode> {
+  const { data } = await apiClient.put<ManagedNode>(`/admin/settings/managed-nodes/${id}`, request)
+  return data
+}
+
+export async function deleteManagedNode(id: string): Promise<{ message: string }> {
+  const { data } = await apiClient.delete<{ message: string }>(`/admin/settings/managed-nodes/${id}`)
+  return data
+}
+
+export async function testManagedNode(id: string): Promise<ManagedNodeRemoteInfo> {
+  const { data } = await apiClient.post<ManagedNodeRemoteInfo>(`/admin/settings/managed-nodes/${id}/test`)
+  return data
+}
+
+export async function createManagedNodeJumpLink(
+  id: string,
+  redirect: string = '/admin/dashboard'
+): Promise<ManagedNodeJumpLinkResponse> {
+  const { data } = await apiClient.post<ManagedNodeJumpLinkResponse>(
+    `/admin/settings/managed-nodes/${id}/jump-link`,
+    { redirect }
+  )
+  return data
+}
+
 // ==================== Overload Cooldown Settings ====================
 
 /**
@@ -636,6 +715,12 @@ export const settingsAPI = {
   createManagedNodeApiKey,
   revokeManagedNodeApiKey,
   listManagedNodeApiKeyAudits,
+  listManagedNodes,
+  createManagedNode,
+  updateManagedNode,
+  deleteManagedNode,
+  testManagedNode,
+  createManagedNodeJumpLink,
   getOverloadCooldownSettings,
   updateOverloadCooldownSettings,
   getStreamTimeoutSettings,

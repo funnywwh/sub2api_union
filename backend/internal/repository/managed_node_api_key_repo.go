@@ -189,6 +189,45 @@ func (r *managedNodeAPIKeyRepository) AuthenticateActiveByHash(ctx context.Conte
 	return &item, nil
 }
 
+func (r *managedNodeAPIKeyRepository) TouchUsageByID(ctx context.Context, keyID int64, ip string, usedAt time.Time, audit *service.ManagedNodeAPIKeyAudit) error {
+	if r == nil || r.db == nil {
+		return nil
+	}
+
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin managed node api key usage tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(
+		ctx,
+		`UPDATE managed_node_api_keys
+		 SET last_used_at = $2,
+		     last_used_ip = $3,
+		     updated_at = NOW()
+		 WHERE id = $1 AND status = $4`,
+		keyID,
+		usedAt,
+		ip,
+		service.ManagedNodeAPIKeyStatusActive,
+	); err != nil {
+		return fmt.Errorf("touch managed node api key usage: %w", err)
+	}
+
+	if audit != nil {
+		audit.ManagedNodeAPIKeyID = keyID
+		if err := insertManagedNodeAPIKeyAudit(ctx, tx, audit); err != nil {
+			return err
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit managed node api key usage tx: %w", err)
+	}
+	return nil
+}
+
 func (r *managedNodeAPIKeyRepository) Revoke(ctx context.Context, keyID int64, revokedBy *int64, revokedAt time.Time, audit *service.ManagedNodeAPIKeyAudit) (*service.ManagedNodeAPIKey, error) {
 	if r == nil || r.db == nil {
 		return nil, infraerrors.InternalServer("MANAGED_NODE_API_KEY_DB_MISSING", "managed node API key database is unavailable")
