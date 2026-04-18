@@ -12,6 +12,7 @@ ARG ALPINE_IMAGE=alpine:3.21
 ARG POSTGRES_IMAGE=postgres:18-alpine
 ARG GOPROXY=https://goproxy.cn,direct
 ARG GOSUMDB=sum.golang.google.cn
+ARG NODE_OPTIONS=--max-old-space-size=4096
 
 # -----------------------------------------------------------------------------
 # Stage 1: Frontend Builder
@@ -19,6 +20,8 @@ ARG GOSUMDB=sum.golang.google.cn
 FROM ${NODE_IMAGE} AS frontend-builder
 
 WORKDIR /app/frontend
+ENV NODE_OPTIONS=${NODE_OPTIONS}
+ENV CI=1
 
 # Install pnpm
 RUN corepack enable && corepack prepare pnpm@latest --activate
@@ -28,8 +31,9 @@ COPY frontend/package.json frontend/pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
 
 # Copy frontend source and build
+# Skip `vue-tsc -b` inside image builds to reduce peak memory usage.
 COPY frontend/ ./
-RUN pnpm run build
+RUN pnpm exec vite build
 
 # -----------------------------------------------------------------------------
 # Stage 2: Backend Builder
