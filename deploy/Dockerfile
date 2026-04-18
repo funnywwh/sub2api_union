@@ -11,6 +11,7 @@ ARG GOLANG_IMAGE=golang:1.26.2-alpine
 ARG ALPINE_IMAGE=alpine:3.20
 ARG GOPROXY=https://goproxy.cn,direct
 ARG GOSUMDB=sum.golang.google.cn
+ARG NODE_OPTIONS=--max-old-space-size=4096
 
 # -----------------------------------------------------------------------------
 # Stage 1: Frontend Builder
@@ -18,6 +19,8 @@ ARG GOSUMDB=sum.golang.google.cn
 FROM ${NODE_IMAGE} AS frontend-builder
 
 WORKDIR /app/frontend
+ENV NODE_OPTIONS=${NODE_OPTIONS}
+ENV CI=1
 
 # Install pnpm
 RUN corepack enable && corepack prepare pnpm@latest --activate
@@ -27,8 +30,10 @@ COPY frontend/package.json frontend/pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
 
 # Copy frontend source and build
+# Skip `vue-tsc -b` inside image builds to keep memory usage predictable in
+# constrained environments. Type checking should still run in CI/local dev.
 COPY frontend/ ./
-RUN pnpm run build
+RUN pnpm exec vite build
 
 # -----------------------------------------------------------------------------
 # Stage 2: Backend Builder
