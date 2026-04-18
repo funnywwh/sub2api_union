@@ -186,6 +186,13 @@ export interface RefreshTokenResponse {
   token_type: string
 }
 
+export interface FederationExchangeResponse {
+  access_token: string
+  expires_in: number
+  token_type: string
+  redirect: string
+}
+
 /**
  * Refresh the access token using the refresh token
  * @returns New token pair
@@ -214,6 +221,13 @@ export async function refreshToken(): Promise<RefreshTokenResponse> {
  */
 export async function revokeAllSessions(): Promise<{ message: string }> {
   const { data } = await apiClient.post<{ message: string }>('/auth/revoke-all-sessions')
+  return data
+}
+
+export async function exchangeFederationTicket(ticket: string): Promise<FederationExchangeResponse> {
+  const { data } = await apiClient.post<FederationExchangeResponse>('/auth/federation/exchange', {
+    ticket
+  })
   return data
 }
 
@@ -402,6 +416,7 @@ export const authAPI = {
   resetPassword,
   refreshToken,
   revokeAllSessions,
+  exchangeFederationTicket,
   completeLinuxDoOAuthRegistration,
   completeOIDCOAuthRegistration
 }

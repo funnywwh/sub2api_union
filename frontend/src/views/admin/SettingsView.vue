@@ -361,6 +361,7 @@
             </div>
           </div>
         </div>
+        <ManagedNodesCard />
         </div><!-- /Tab: Security -->
 
         <!-- Tab: Gateway -->
@@ -3046,6 +3047,7 @@ import Toggle from '@/components/common/Toggle.vue'
 import ProxySelector from '@/components/common/ProxySelector.vue'
 import ImageUpload from '@/components/common/ImageUpload.vue'
 import BackupSettings from '@/views/admin/BackupView.vue'
+import ManagedNodesCard from '@/components/admin/settings/ManagedNodesCard.vue'
 import { useClipboard } from '@/composables/useClipboard'
 import { extractApiErrorMessage } from '@/utils/apiError'
 import { useAppStore } from '@/stores'

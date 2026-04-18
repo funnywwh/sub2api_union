@@ -40,7 +40,7 @@ func adminAuth(
 		//   Sec-WebSocket-Protocol: sub2api-admin, jwt.<token>
 		if isWebSocketUpgradeRequest(c) {
 			if token := extractJWTFromWebSocketSubprotocol(c); token != "" {
-				if !validateJWTForAdmin(c, token, authService, userService) {
+				if !validateJWTForAdmin(c, token, authService, userService, managedNodeAPIKeyService) {
 					return
 				}
 				c.Next()
@@ -68,7 +68,7 @@ func adminAuth(
 					AbortWithError(c, 401, "UNAUTHORIZED", "Authorization required")
 					return
 				}
-				if !validateJWTForAdmin(c, token, authService, userService) {
+				if !validateJWTForAdmin(c, token, authService, userService, managedNodeAPIKeyService) {
 					return
 				}
 				c.Next()
@@ -195,6 +195,7 @@ func validateJWTForAdmin(
 	token string,
 	authService *service.AuthService,
 	userService *service.UserService,
+	managedNodeAPIKeyService *service.ManagedNodeAPIKeyService,
 ) bool {
 	// 验证 JWT token
 	claims, err := authService.ValidateToken(token)
@@ -237,7 +238,24 @@ func validateJWTForAdmin(
 		Concurrency: user.Concurrency,
 	})
 	c.Set(string(ContextKeyUserRole), user.Role)
-	c.Set("auth_method", "jwt")
+	authMethod := strings.TrimSpace(claims.AuthMethod)
+	if authMethod == "" {
+		authMethod = "jwt"
+	}
+	c.Set("auth_method", authMethod)
+	if claims.ManagedNodeAPIKeyID != nil {
+		c.Set("managed_node_api_key_id", *claims.ManagedNodeAPIKeyID)
+	}
+	if strings.TrimSpace(claims.ManagedNodeAPIKeyName) != "" {
+		c.Set("managed_node_api_key_name", strings.TrimSpace(claims.ManagedNodeAPIKeyName))
+	}
+	if managedNodeAPIKeyService != nil && claims.ManagedNodeAPIKeyID != nil {
+		_ = managedNodeAPIKeyService.RecordUsageByID(c.Request.Context(), *claims.ManagedNodeAPIKeyID, service.ManagedNodeAPIKeyUsageInput{
+			IP:     c.ClientIP(),
+			Method: c.Request.Method,
+			Path:   c.Request.URL.Path,
+		}, authMethod)
+	}
 
 	return true
 }

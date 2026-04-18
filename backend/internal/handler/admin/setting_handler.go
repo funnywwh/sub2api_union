@@ -47,6 +47,7 @@ func scopesContainOpenID(scopes string) bool {
 type SettingHandler struct {
 	settingService           *service.SettingService
 	managedNodeAPIKeyService *service.ManagedNodeAPIKeyService
+	managedNodeService       *service.ManagedNodeService
 	emailService             *service.EmailService
 	turnstileService         *service.TurnstileService
 	opsService               *service.OpsService
@@ -55,10 +56,11 @@ type SettingHandler struct {
 }
 
 // NewSettingHandler 创建系统设置处理器
-func NewSettingHandler(settingService *service.SettingService, managedNodeAPIKeyService *service.ManagedNodeAPIKeyService, emailService *service.EmailService, turnstileService *service.TurnstileService, opsService *service.OpsService, paymentConfigService *service.PaymentConfigService, paymentService *service.PaymentService) *SettingHandler {
+func NewSettingHandler(settingService *service.SettingService, managedNodeAPIKeyService *service.ManagedNodeAPIKeyService, managedNodeService *service.ManagedNodeService, emailService *service.EmailService, turnstileService *service.TurnstileService, opsService *service.OpsService, paymentConfigService *service.PaymentConfigService, paymentService *service.PaymentService) *SettingHandler {
 	return &SettingHandler{
 		settingService:           settingService,
 		managedNodeAPIKeyService: managedNodeAPIKeyService,
+		managedNodeService:       managedNodeService,
 		emailService:             emailService,
 		turnstileService:         turnstileService,
 		opsService:               opsService,

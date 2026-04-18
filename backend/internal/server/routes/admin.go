@@ -400,6 +400,16 @@ func registerSettingsRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		adminSettings.POST("/managed-node-keys", h.Admin.Setting.CreateManagedNodeAPIKey)
 		adminSettings.POST("/managed-node-keys/:id/revoke", h.Admin.Setting.RevokeManagedNodeAPIKey)
 		adminSettings.GET("/managed-node-keys/:id/audits", h.Admin.Setting.ListManagedNodeAPIKeyAudits)
+		// Managed Node registry
+		adminSettings.GET("/managed-nodes", h.Admin.Setting.ListManagedNodes)
+		adminSettings.POST("/managed-nodes", h.Admin.Setting.CreateManagedNode)
+		adminSettings.PUT("/managed-nodes/:id", h.Admin.Setting.UpdateManagedNode)
+		adminSettings.DELETE("/managed-nodes/:id", h.Admin.Setting.DeleteManagedNode)
+		adminSettings.POST("/managed-nodes/:id/test", h.Admin.Setting.TestManagedNode)
+		adminSettings.POST("/managed-nodes/:id/jump-link", h.Admin.Setting.CreateManagedNodeJumpLink)
+		// Federation jump endpoints (for remote managed nodes)
+		adminSettings.GET("/federation/info", h.Admin.Setting.GetFederationInfo)
+		adminSettings.POST("/federation/session-link", h.Admin.Setting.CreateFederationSessionLink)
 		// 529过载冷却配置
 		adminSettings.GET("/overload-cooldown", h.Admin.Setting.GetOverloadCooldownSettings)
 		adminSettings.PUT("/overload-cooldown", h.Admin.Setting.UpdateOverloadCooldownSettings)

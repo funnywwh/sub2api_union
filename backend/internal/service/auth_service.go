@@ -55,7 +55,17 @@ type JWTClaims struct {
 	Email        string `json:"email"`
 	Role         string `json:"role"`
 	TokenVersion int64  `json:"token_version"` // Used to invalidate tokens on password change
+	AuthMethod   string `json:"auth_method,omitempty"`
+	ManagedNodeAPIKeyID   *int64 `json:"managed_node_api_key_id,omitempty"`
+	ManagedNodeAPIKeyName string `json:"managed_node_api_key_name,omitempty"`
 	jwt.RegisteredClaims
+}
+
+type AccessTokenOptions struct {
+	AuthMethod            string
+	ManagedNodeAPIKeyID   *int64
+	ManagedNodeAPIKeyName string
+	ExpiresAt             *time.Time
 }
 
 // AuthService 认证服务
@@ -840,9 +850,32 @@ func isReservedEmail(email string) bool {
 // GenerateToken 生成JWT access token
 // 使用新的access_token_expire_minutes配置项（如果配置了），否则回退到expire_hour
 func (s *AuthService) GenerateToken(user *User) (string, error) {
+	return s.generateToken(user, AccessTokenOptions{})
+}
+
+func (s *AuthService) GenerateFederationAccessToken(user *User, authMethod string, managedNodeAPIKeyID *int64, managedNodeAPIKeyName string, ttl time.Duration) (string, int, error) {
+	if ttl <= 0 {
+		ttl = 30 * time.Minute
+	}
+	expiresAt := time.Now().Add(ttl)
+	token, err := s.generateToken(user, AccessTokenOptions{
+		AuthMethod:            authMethod,
+		ManagedNodeAPIKeyID:   managedNodeAPIKeyID,
+		ManagedNodeAPIKeyName: managedNodeAPIKeyName,
+		ExpiresAt:             &expiresAt,
+	})
+	if err != nil {
+		return "", 0, err
+	}
+	return token, int(ttl.Seconds()), nil
+}
+
+func (s *AuthService) generateToken(user *User, options AccessTokenOptions) (string, error) {
 	now := time.Now()
 	var expiresAt time.Time
-	if s.cfg.JWT.AccessTokenExpireMinutes > 0 {
+	if options.ExpiresAt != nil && !options.ExpiresAt.IsZero() {
+		expiresAt = options.ExpiresAt.UTC()
+	} else if s.cfg.JWT.AccessTokenExpireMinutes > 0 {
 		expiresAt = now.Add(time.Duration(s.cfg.JWT.AccessTokenExpireMinutes) * time.Minute)
 	} else {
 		// 向后兼容：使用旧的expire_hour配置
@@ -854,6 +887,9 @@ func (s *AuthService) GenerateToken(user *User) (string, error) {
 		Email:        user.Email,
 		Role:         user.Role,
 		TokenVersion: user.TokenVersion,
+		AuthMethod:   strings.TrimSpace(options.AuthMethod),
+		ManagedNodeAPIKeyID: options.ManagedNodeAPIKeyID,
+		ManagedNodeAPIKeyName: strings.TrimSpace(options.ManagedNodeAPIKeyName),
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(expiresAt),
 			IssuedAt:  jwt.NewNumericDate(now),

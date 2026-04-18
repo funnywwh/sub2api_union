@@ -87,6 +87,7 @@ type ManagedNodeAPIKeyRepository interface {
 	Create(ctx context.Context, key *ManagedNodeAPIKey, audit *ManagedNodeAPIKeyAudit) error
 	List(ctx context.Context) ([]ManagedNodeAPIKey, error)
 	AuthenticateActiveByHash(ctx context.Context, keyHash, ip string, usedAt time.Time, audit *ManagedNodeAPIKeyAudit) (*ManagedNodeAPIKey, error)
+	TouchUsageByID(ctx context.Context, keyID int64, ip string, usedAt time.Time, audit *ManagedNodeAPIKeyAudit) error
 	Revoke(ctx context.Context, keyID int64, revokedBy *int64, revokedAt time.Time, audit *ManagedNodeAPIKeyAudit) (*ManagedNodeAPIKey, error)
 	ListAudits(ctx context.Context, keyID int64, limit int) ([]ManagedNodeAPIKeyAudit, error)
 }
@@ -238,6 +239,33 @@ func (s *ManagedNodeAPIKeyService) AuthenticateKey(ctx context.Context, rawKey s
 		}
 	}
 	return s.repo.AuthenticateActiveByHash(ctx, hashManagedNodeAPIKey(rawKey), strings.TrimSpace(usage.IP), usedAt, audit)
+}
+
+func (s *ManagedNodeAPIKeyService) RecordUsageByID(ctx context.Context, keyID int64, usage ManagedNodeAPIKeyUsageInput, authMethod string) error {
+	if s == nil || s.repo == nil || keyID <= 0 {
+		return nil
+	}
+	usedAt := time.Now().UTC()
+	detail := map[string]any{}
+	if ip := strings.TrimSpace(usage.IP); ip != "" {
+		detail["ip"] = ip
+	}
+	if method := strings.TrimSpace(usage.Method); method != "" {
+		detail["method"] = method
+	}
+	if path := strings.TrimSpace(usage.Path); path != "" {
+		detail["path"] = path
+	}
+	audit := &ManagedNodeAPIKeyAudit{
+		Action:     ManagedNodeAPIKeyAuditActionUsed,
+		AuthMethod: strings.TrimSpace(authMethod),
+		Detail:     detail,
+		CreatedAt:  usedAt,
+	}
+	if audit.AuthMethod == "" {
+		audit.AuthMethod = "managed_node_api_key"
+	}
+	return s.repo.TouchUsageByID(ctx, keyID, strings.TrimSpace(usage.IP), usedAt, audit)
 }
 
 func generateManagedNodeAPIKey() (string, error) {

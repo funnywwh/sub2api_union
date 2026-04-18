@@ -93,6 +93,15 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/auth/federation/callback',
+    name: 'FederationCallback',
+    component: () => import('@/views/auth/FederationCallbackView.vue'),
+    meta: {
+      requiresAuth: false,
+      title: 'Federation Callback'
+    }
+  },
+  {
     path: '/forgot-password',
     name: 'ForgotPassword',
     component: () => import('@/views/auth/ForgotPasswordView.vue'),
