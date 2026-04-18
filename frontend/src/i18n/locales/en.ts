@@ -333,6 +333,7 @@ export default {
   // Navigation
   nav: {
     dashboard: 'Dashboard',
+    chat: 'Chat',
     announcements: 'Announcements',
     apiKeys: 'API Keys',
     usage: 'Usage',
@@ -363,6 +364,46 @@ export default {
     paymentDashboard: 'Payment Dashboard',
     paymentConfig: 'Payment Config',
     paymentPlans: 'Plans'
+  },
+
+  chat: {
+    title: 'AI Chat',
+    subtitle: 'Pick a supported group and start chatting right after login.',
+    workspace: 'Workspace',
+    newChat: 'New Chat',
+    groupLabel: 'Group',
+    modelLabel: 'Model',
+    modelPlaceholder: 'Select or type a model name',
+    modelHint: 'You can type a custom model name if the group does not expose suggestions.',
+    loadingModels: 'Loading available models...',
+    modelsLoaded: '{count} models available',
+    noGroupsTitle: 'No chat-ready groups available',
+    noGroupsDescription: 'Your account does not currently have access to a supported chat group. Ask an administrator to assign one.',
+    noGroupsComposer: 'No supported group is available for chat',
+    selectGroupFirst: 'Select a group before sending messages',
+    selectModelFirst: 'Select a model before sending messages',
+    inputPlaceholder: 'Send a message...',
+    enterHint: 'Press Enter to send, Shift + Enter for a new line',
+    send: 'Send',
+    sending: 'Sending...',
+    stop: 'Stop',
+    failedToLoadGroups: 'Failed to load groups',
+    failedToLoadModels: 'Failed to load models',
+    groupsRefreshed: 'Groups refreshed',
+    requestFailed: 'Request failed. Please try again.',
+    emptyReply: 'The model returned an empty reply.',
+    emptyPreview: 'No messages yet',
+    emptyTitle: 'What should we work on?',
+    emptyDescription: 'Talk to any model available in your assigned groups, keep lightweight in-tab history, and iterate without leaving the dashboard.',
+    welcomeBadge: 'Browser Chat',
+    you: 'You',
+    assistant: 'Assistant',
+    copyMessage: 'Copy message',
+    starters: {
+      debug: 'Help me debug this code path',
+      summary: 'Summarize the latest architecture decisions',
+      plan: 'Draft a concrete implementation plan'
+    }
   },
 
   // Auth

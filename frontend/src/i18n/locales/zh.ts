@@ -333,6 +333,7 @@ export default {
   // Navigation
   nav: {
     dashboard: '仪表盘',
+    chat: '聊天',
     announcements: '公告',
     apiKeys: 'API 密钥',
     usage: '使用记录',
@@ -363,6 +364,46 @@ export default {
     paymentDashboard: '支付概览',
     paymentConfig: '支付配置',
     paymentPlans: '订阅套餐'
+  },
+
+  chat: {
+    title: 'AI 聊天',
+    subtitle: '选择一个可用分组，登录后即可直接开始聊天。',
+    workspace: '会话空间',
+    newChat: '新建会话',
+    groupLabel: '分组',
+    modelLabel: '模型',
+    modelPlaceholder: '选择或输入模型名称',
+    modelHint: '如果当前分组没有返回候选模型，也可以手动输入模型名。',
+    loadingModels: '正在加载可用模型...',
+    modelsLoaded: '已加载 {count} 个模型',
+    noGroupsTitle: '当前没有可聊天的分组',
+    noGroupsDescription: '你的账号暂时没有被分配到支持聊天的分组，请联系管理员开通。',
+    noGroupsComposer: '当前没有可用于聊天的分组',
+    selectGroupFirst: '发送消息前请先选择分组',
+    selectModelFirst: '发送消息前请先选择模型',
+    inputPlaceholder: '输入你的消息...',
+    enterHint: '回车发送，Shift + 回车换行',
+    send: '发送',
+    sending: '发送中...',
+    stop: '停止',
+    failedToLoadGroups: '加载分组失败',
+    failedToLoadModels: '加载模型失败',
+    groupsRefreshed: '分组已刷新',
+    requestFailed: '请求失败，请稍后重试。',
+    emptyReply: '模型返回了空内容。',
+    emptyPreview: '还没有消息',
+    emptyTitle: '这次想聊点什么？',
+    emptyDescription: '你可以直接使用已分配分组里的可用模型对话，在当前标签页保留轻量历史记录，不用离开控制台也能连续交流。',
+    welcomeBadge: '浏览器聊天',
+    you: '你',
+    assistant: '助手',
+    copyMessage: '复制消息',
+    starters: {
+      debug: '帮我排查这段代码的问题',
+      summary: '总结最近的架构决策',
+      plan: '给我一个可执行的实现计划'
+    }
   },
 
   // Auth

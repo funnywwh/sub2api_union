@@ -64,6 +64,12 @@ func RegisterUserRoutes(
 			groups.GET("/rates", h.APIKey.GetUserGroupRates)
 		}
 
+		chat := authenticated.Group("/user/chat")
+		{
+			chat.GET("/models", h.UserChat.ListModels)
+			chat.POST("/completions", h.UserChat.ChatCompletions)
+		}
+
 		// 使用记录
 		usage := authenticated.Group("/usage")
 		{
