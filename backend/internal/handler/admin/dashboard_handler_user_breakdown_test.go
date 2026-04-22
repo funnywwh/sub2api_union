@@ -20,6 +20,7 @@ type userBreakdownRepoCapture struct {
 	service.UsageLogRepository
 	capturedDim   usagestats.UserBreakdownDimension
 	capturedLimit int
+	callCount     int
 	result        []usagestats.UserBreakdownItem
 }
 
@@ -29,6 +30,7 @@ func (r *userBreakdownRepoCapture) GetUserBreakdownStats(
 ) ([]usagestats.UserBreakdownItem, error) {
 	r.capturedDim = dim
 	r.capturedLimit = limit
+	r.callCount++
 	if r.result != nil {
 		return r.result, nil
 	}
@@ -226,4 +228,46 @@ func TestGetUserBreakdown_NoFilters(t *testing.T) {
 	require.Equal(t, int64(0), repo.capturedDim.GroupID)
 	require.Empty(t, repo.capturedDim.Model)
 	require.Empty(t, repo.capturedDim.Endpoint)
+}
+
+func TestGetUserBreakdown_RequestTypeBillingModeAndSort(t *testing.T) {
+	repo := &userBreakdownRepoCapture{}
+	router := newUserBreakdownRouter(repo)
+
+	req := httptest.NewRequest(http.MethodGet,
+		"/admin/dashboard/user-breakdown?start_date=2026-03-01&end_date=2026-03-16&request_type=stream&billing_mode=token&sort_by=tokens", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	require.NotNil(t, repo.capturedDim.RequestType)
+	require.Equal(t, int16(service.RequestTypeStream), *repo.capturedDim.RequestType)
+	require.Equal(t, "token", repo.capturedDim.BillingMode)
+	require.Equal(t, "tokens", repo.capturedDim.SortBy)
+}
+
+func TestGetUserBreakdown_UsesSnapshotCache(t *testing.T) {
+	dashboardUserBreakdownCache = newSnapshotCache(30 * time.Second)
+
+	repo := &userBreakdownRepoCapture{
+		result: []usagestats.UserBreakdownItem{
+			{UserID: 1, Email: "alice@test.com", TotalTokens: 1200, ActualCost: 1.2},
+		},
+	}
+	router := newUserBreakdownRouter(repo)
+	url := "/admin/dashboard/user-breakdown?start_date=2026-03-01&end_date=2026-03-16&sort_by=tokens"
+
+	req1 := httptest.NewRequest(http.MethodGet, url, nil)
+	w1 := httptest.NewRecorder()
+	router.ServeHTTP(w1, req1)
+
+	req2 := httptest.NewRequest(http.MethodGet, url, nil)
+	w2 := httptest.NewRecorder()
+	router.ServeHTTP(w2, req2)
+
+	require.Equal(t, http.StatusOK, w1.Code)
+	require.Equal(t, http.StatusOK, w2.Code)
+	require.Equal(t, "miss", w1.Header().Get("X-Snapshot-Cache"))
+	require.Equal(t, "hit", w2.Header().Get("X-Snapshot-Cache"))
+	require.Equal(t, 1, repo.callCount)
 }

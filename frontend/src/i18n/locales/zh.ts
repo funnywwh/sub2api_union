@@ -3648,6 +3648,12 @@ export default {
       ipAddress: 'IP',
       clickToViewBalance: '点击查看充值记录',
       failedToLoadUser: '加载用户信息失败',
+      rank: '排名',
+      userPeriodRanking: '用户周期排行',
+      userPeriodRankingHint: '按当前筛选范围的 Token 总量排序，快速查看高消耗用户。',
+      userPeriodRankingEmpty: '当前筛选范围暂无排行数据',
+      periodShare: '周期占比',
+      costShareShort: '费用占比',
       cleanup: {
         button: '清理',
         title: '清理使用记录',

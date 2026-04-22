@@ -3490,6 +3490,12 @@ export default {
       ipAddress: 'IP',
       clickToViewBalance: 'Click to view balance history',
       failedToLoadUser: 'Failed to load user info',
+      rank: 'Rank',
+      userPeriodRanking: 'User Period Ranking',
+      userPeriodRankingHint: 'Sorted by total tokens in the current filtered range.',
+      userPeriodRankingEmpty: 'No ranking data in the current filtered range',
+      periodShare: 'Period Share',
+      costShareShort: 'Cost',
       cleanup: {
         button: 'Cleanup',
         title: 'Cleanup Usage Records',
