@@ -3,7 +3,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 
 import UsageView from '../UsageView.vue'
 
-const { list, getStats, getSnapshotV2, getById } = vi.hoisted(() => {
+const { list, getStats, getSnapshotV2, getModelStats, getUserBreakdown, getById } = vi.hoisted(() => {
   vi.stubGlobal('localStorage', {
     getItem: vi.fn(() => null),
     setItem: vi.fn(),
@@ -14,6 +14,8 @@ const { list, getStats, getSnapshotV2, getById } = vi.hoisted(() => {
     list: vi.fn(),
     getStats: vi.fn(),
     getSnapshotV2: vi.fn(),
+    getModelStats: vi.fn(),
+    getUserBreakdown: vi.fn(),
     getById: vi.fn(),
   }
 })
@@ -40,6 +42,8 @@ vi.mock('@/api/admin', () => ({
     },
     dashboard: {
       getSnapshotV2,
+      getModelStats,
+      getUserBreakdown,
     },
     users: {
       getById,
@@ -111,6 +115,8 @@ describe('admin UsageView distribution metric toggles', () => {
     list.mockReset()
     getStats.mockReset()
     getSnapshotV2.mockReset()
+    getModelStats.mockReset()
+    getUserBreakdown.mockReset()
     getById.mockReset()
 
     list.mockResolvedValue({
@@ -132,6 +138,16 @@ describe('admin UsageView distribution metric toggles', () => {
       trend: [],
       models: [],
       groups: [],
+    })
+    getModelStats.mockResolvedValue({
+      models: [],
+      start_date: '2026-03-01',
+      end_date: '2026-03-02',
+    })
+    getUserBreakdown.mockResolvedValue({
+      users: [],
+      start_date: '2026-03-01',
+      end_date: '2026-03-02',
     })
   })
 
@@ -155,6 +171,7 @@ describe('admin UsageView distribution metric toggles', () => {
           DateRangePicker: true,
           Icon: true,
           TokenUsageTrend: true,
+          UsageUserRanking: true,
           ModelDistributionChart: ModelDistributionChartStub,
           GroupDistributionChart: GroupDistributionChartStub,
         },
@@ -165,12 +182,19 @@ describe('admin UsageView distribution metric toggles', () => {
     await flushPromises()
 
     expect(getSnapshotV2).toHaveBeenCalledTimes(1)
+    expect(getUserBreakdown).toHaveBeenCalledTimes(1)
     const now = new Date()
     const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000)
     expect(getSnapshotV2).toHaveBeenCalledWith(expect.objectContaining({
       start_date: formatLocalDate(yesterday),
       end_date: formatLocalDate(now),
       granularity: 'hour'
+    }))
+    expect(getUserBreakdown).toHaveBeenCalledWith(expect.objectContaining({
+      start_date: formatLocalDate(yesterday),
+      end_date: formatLocalDate(now),
+      sort_by: 'tokens',
+      limit: 12,
     }))
 
     const modelChart = wrapper.find('[data-test="model-chart"]')
@@ -185,6 +209,7 @@ describe('admin UsageView distribution metric toggles', () => {
     expect(modelChart.find('.metric').text()).toBe('actual_cost')
     expect(groupChart.find('.metric').text()).toBe('tokens')
     expect(getSnapshotV2).toHaveBeenCalledTimes(1)
+    expect(getUserBreakdown).toHaveBeenCalledTimes(1)
 
     await groupChart.find('.switch-metric').trigger('click')
     await flushPromises()
@@ -192,5 +217,6 @@ describe('admin UsageView distribution metric toggles', () => {
     expect(modelChart.find('.metric').text()).toBe('actual_cost')
     expect(groupChart.find('.metric').text()).toBe('actual_cost')
     expect(getSnapshotV2).toHaveBeenCalledTimes(1)
+    expect(getUserBreakdown).toHaveBeenCalledTimes(1)
   })
 })

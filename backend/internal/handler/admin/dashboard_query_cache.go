@@ -10,11 +10,12 @@ import (
 )
 
 var (
-	dashboardTrendCache        = newSnapshotCache(30 * time.Second)
-	dashboardModelStatsCache   = newSnapshotCache(30 * time.Second)
-	dashboardGroupStatsCache   = newSnapshotCache(30 * time.Second)
-	dashboardUsersTrendCache   = newSnapshotCache(30 * time.Second)
-	dashboardAPIKeysTrendCache = newSnapshotCache(30 * time.Second)
+	dashboardTrendCache         = newSnapshotCache(30 * time.Second)
+	dashboardModelStatsCache    = newSnapshotCache(30 * time.Second)
+	dashboardGroupStatsCache    = newSnapshotCache(30 * time.Second)
+	dashboardUsersTrendCache    = newSnapshotCache(30 * time.Second)
+	dashboardAPIKeysTrendCache  = newSnapshotCache(30 * time.Second)
+	dashboardUserBreakdownCache = newSnapshotCache(30 * time.Second)
 )
 
 type dashboardTrendCacheKey struct {
@@ -49,6 +50,25 @@ type dashboardEntityTrendCacheKey struct {
 	EndTime     string `json:"end_time"`
 	Granularity string `json:"granularity"`
 	Limit       int    `json:"limit"`
+}
+
+type dashboardUserBreakdownCacheKey struct {
+	StartTime    string `json:"start_time"`
+	EndTime      string `json:"end_time"`
+	GroupID      int64  `json:"group_id"`
+	Model        string `json:"model"`
+	ModelType    string `json:"model_type"`
+	Endpoint     string `json:"endpoint"`
+	EndpointType string `json:"endpoint_type"`
+	SortBy       string `json:"sort_by"`
+	UserID       int64  `json:"user_id"`
+	APIKeyID     int64  `json:"api_key_id"`
+	AccountID    int64  `json:"account_id"`
+	RequestType  *int16 `json:"request_type"`
+	Stream       *bool  `json:"stream"`
+	BillingType  *int8  `json:"billing_type"`
+	BillingMode  string `json:"billing_mode"`
+	Limit        int    `json:"limit"`
 }
 
 func cacheStatusValue(hit bool) string {
@@ -200,4 +220,38 @@ func (h *DashboardHandler) getUserUsageTrendCached(ctx context.Context, startTim
 	}
 	trend, err := snapshotPayloadAs[[]usagestats.UserUsageTrendPoint](entry.Payload)
 	return trend, hit, err
+}
+
+func (h *DashboardHandler) getUserBreakdownCached(
+	ctx context.Context,
+	startTime, endTime time.Time,
+	dim usagestats.UserBreakdownDimension,
+	limit int,
+) ([]usagestats.UserBreakdownItem, bool, error) {
+	key := mustMarshalDashboardCacheKey(dashboardUserBreakdownCacheKey{
+		StartTime:    startTime.UTC().Format(time.RFC3339),
+		EndTime:      endTime.UTC().Format(time.RFC3339),
+		GroupID:      dim.GroupID,
+		Model:        dim.Model,
+		ModelType:    usagestats.NormalizeModelSource(dim.ModelType),
+		Endpoint:     dim.Endpoint,
+		EndpointType: dim.EndpointType,
+		SortBy:       dim.SortBy,
+		UserID:       dim.UserID,
+		APIKeyID:     dim.APIKeyID,
+		AccountID:    dim.AccountID,
+		RequestType:  dim.RequestType,
+		Stream:       dim.Stream,
+		BillingType:  dim.BillingType,
+		BillingMode:  dim.BillingMode,
+		Limit:        limit,
+	})
+	entry, hit, err := dashboardUserBreakdownCache.GetOrLoad(key, func() (any, error) {
+		return h.dashboardService.GetUserBreakdownStats(ctx, startTime, endTime, dim, limit)
+	})
+	if err != nil {
+		return nil, hit, err
+	}
+	stats, err := snapshotPayloadAs[[]usagestats.UserBreakdownItem](entry.Payload)
+	return stats, hit, err
 }

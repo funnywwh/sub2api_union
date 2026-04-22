@@ -635,6 +635,7 @@ func (h *DashboardHandler) GetUserBreakdown(c *gin.Context) {
 	dim.ModelType = rawModelSource
 	dim.Endpoint = c.Query("endpoint")
 	dim.EndpointType = c.DefaultQuery("endpoint_type", "inbound")
+	dim.BillingMode = strings.TrimSpace(c.Query("billing_mode"))
 
 	// Additional filter conditions
 	if v := c.Query("user_id"); v != "" {
@@ -652,13 +653,19 @@ func (h *DashboardHandler) GetUserBreakdown(c *gin.Context) {
 			dim.AccountID = id
 		}
 	}
-	if v := c.Query("request_type"); v != "" {
-		if rt, err := strconv.ParseInt(v, 10, 16); err == nil {
+	if v := strings.TrimSpace(c.Query("request_type")); v != "" {
+		if parsed, err := service.ParseUsageRequestType(v); err == nil {
+			rtVal := int16(parsed)
+			dim.RequestType = &rtVal
+		} else if rt, intErr := strconv.ParseInt(v, 10, 16); intErr == nil {
 			rtVal := int16(rt)
 			dim.RequestType = &rtVal
+		} else {
+			response.BadRequest(c, err.Error())
+			return
 		}
 	}
-	if v := c.Query("stream"); v != "" {
+	if v := c.Query("stream"); dim.RequestType == nil && v != "" {
 		if s, err := strconv.ParseBool(v); err == nil {
 			dim.Stream = &s
 		}
@@ -669,6 +676,17 @@ func (h *DashboardHandler) GetUserBreakdown(c *gin.Context) {
 			dim.BillingType = &btVal
 		}
 	}
+	switch sortBy := strings.TrimSpace(c.Query("sort_by")); sortBy {
+	case "", "actual_cost", "cost":
+		dim.SortBy = "actual_cost"
+	case "tokens", "total_tokens":
+		dim.SortBy = "tokens"
+	case "requests":
+		dim.SortBy = "requests"
+	default:
+		response.BadRequest(c, "Invalid sort_by, use actual_cost/tokens/requests")
+		return
+	}
 
 	limit := 50
 	if v := c.Query("limit"); v != "" {
@@ -677,13 +695,12 @@ func (h *DashboardHandler) GetUserBreakdown(c *gin.Context) {
 		}
 	}
 
-	stats, err := h.dashboardService.GetUserBreakdownStats(
-		c.Request.Context(), startTime, endTime, dim, limit,
-	)
+	stats, hit, err := h.getUserBreakdownCached(c.Request.Context(), startTime, endTime, dim, limit)
 	if err != nil {
 		response.Error(c, 500, "Failed to get user breakdown stats")
 		return
 	}
+	c.Header("X-Snapshot-Cache", cacheStatusValue(hit))
 
 	response.Success(c, gin.H{
 		"users":      stats,

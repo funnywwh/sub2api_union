@@ -467,6 +467,35 @@ func TestUsageLogRepositoryGetUserSpendingRanking(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestUsageLogRepositoryGetUserBreakdownStatsSupportsRequestTypeBillingModeAndTokenSort(t *testing.T) {
+	db, mock := newSQLMock(t)
+	repo := &usageLogRepository{sql: db}
+
+	start := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := start.Add(24 * time.Hour)
+	requestType := int16(service.RequestTypeStream)
+	billingType := int8(1)
+
+	rows := sqlmock.NewRows([]string{"user_id", "email", "requests", "total_tokens", "cost", "actual_cost", "account_cost"}).
+		AddRow(int64(7), "rank@example.com", int64(3), int64(1200), 1.5, 1.2, 0.9)
+
+	mock.ExpectQuery("SELECT\\s+COALESCE\\(ul.user_id, 0\\) as user_id,.*request_type = \\$3 OR \\(request_type = 0 AND stream = TRUE AND openai_ws_mode = FALSE\\).*ul.billing_type = \\$4.*ul.billing_mode = \\$5.*ORDER BY total_tokens DESC, actual_cost DESC, user_id ASC").
+		WithArgs(start, end, requestType, billingType, "token").
+		WillReturnRows(rows)
+
+	got, err := repo.GetUserBreakdownStats(context.Background(), start, end, usagestats.UserBreakdownDimension{
+		RequestType: &requestType,
+		BillingType: &billingType,
+		BillingMode: "token",
+		SortBy:      "tokens",
+	}, 12)
+	require.NoError(t, err)
+	require.Equal(t, []usagestats.UserBreakdownItem{
+		{UserID: 7, Email: "rank@example.com", Requests: 3, TotalTokens: 1200, Cost: 1.5, ActualCost: 1.2, AccountCost: 0.9},
+	}, got)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestBuildRequestTypeFilterConditionLegacyFallback(t *testing.T) {
 	tests := []struct {
 		name      string

@@ -3190,20 +3190,28 @@ func (r *usageLogRepository) GetUserBreakdownStats(ctx context.Context, startTim
 		query += fmt.Sprintf(" AND ul.account_id = $%d", len(args)+1)
 		args = append(args, dim.AccountID)
 	}
-	if dim.RequestType != nil {
-		query += fmt.Sprintf(" AND ul.request_type = $%d", len(args)+1)
-		args = append(args, *dim.RequestType)
-	}
-	if dim.Stream != nil {
-		query += fmt.Sprintf(" AND ul.stream = $%d", len(args)+1)
-		args = append(args, *dim.Stream)
-	}
+	query, args = appendRequestTypeOrStreamQueryFilter(query, args, dim.RequestType, dim.Stream)
 	if dim.BillingType != nil {
 		query += fmt.Sprintf(" AND ul.billing_type = $%d", len(args)+1)
 		args = append(args, *dim.BillingType)
 	}
+	if dim.BillingMode != "" {
+		query += fmt.Sprintf(" AND ul.billing_mode = $%d", len(args)+1)
+		args = append(args, dim.BillingMode)
+	}
 
-	query += " GROUP BY ul.user_id, u.email ORDER BY actual_cost DESC"
+	orderBy := "actual_cost DESC, total_tokens DESC, user_id ASC"
+	switch strings.TrimSpace(dim.SortBy) {
+	case "tokens", "total_tokens":
+		orderBy = "total_tokens DESC, actual_cost DESC, user_id ASC"
+	case "requests":
+		orderBy = "requests DESC, total_tokens DESC, user_id ASC"
+	case "", "actual_cost", "cost":
+	default:
+		orderBy = "actual_cost DESC, total_tokens DESC, user_id ASC"
+	}
+
+	query += " GROUP BY ul.user_id, u.email ORDER BY " + orderBy
 	if limit > 0 {
 		query += fmt.Sprintf(" LIMIT %d", limit)
 	}
