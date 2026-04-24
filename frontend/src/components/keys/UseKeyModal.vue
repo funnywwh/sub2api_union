@@ -693,6 +693,23 @@ function generateOpenCodeConfig(platform: string, baseUrl: string, apiKey: strin
         xhigh: {}
       }
     },
+    'gpt-5.5': {
+      name: 'GPT-5.5',
+      limit: {
+        // Keep this conservative until the official API model card is published.
+        context: 256000,
+        output: 128000
+      },
+      options: {
+        store: false
+      },
+      variants: {
+        low: {},
+        medium: {},
+        high: {},
+        xhigh: {}
+      }
+    },
     'gpt-5.4': {
       name: 'GPT-5.4',
       limit: {
