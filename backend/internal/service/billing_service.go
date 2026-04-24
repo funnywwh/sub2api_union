@@ -228,6 +228,14 @@ func (s *BillingService) initFallbackPricing() {
 		LongContextInputMultiplier:     openAIGPT54LongContextInputMultiplier,
 		LongContextOutputMultiplier:    openAIGPT54LongContextOutputMultiplier,
 	}
+	// OpenAI GPT-5.5（官方公开标准价格）
+	s.fallbackPrices["gpt-5.5"] = &ModelPricing{
+		InputPricePerToken:         5e-6,   // $5 per MTok
+		OutputPricePerToken:        30e-6,  // $30 per MTok
+		CacheCreationPricePerToken: 5e-6,   // 兜底按常规输入价计
+		CacheReadPricePerToken:     0.5e-6, // $0.50 per MTok
+		SupportsCacheBreakdown:     false,
+	}
 	s.fallbackPrices["gpt-5.4-mini"] = &ModelPricing{
 		InputPricePerToken:     7.5e-7,
 		OutputPricePerToken:    4.5e-6,
@@ -316,6 +324,8 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 	if strings.Contains(modelLower, "gpt-5") || strings.Contains(modelLower, "codex") {
 		normalized := normalizeCodexModel(modelLower)
 		switch normalized {
+		case "gpt-5.5":
+			return s.fallbackPrices["gpt-5.5"]
 		case "gpt-5.4-mini":
 			return s.fallbackPrices["gpt-5.4-mini"]
 		case "gpt-5.4-nano":
