@@ -237,6 +237,58 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_SessionSticky(t *testin
 	}
 }
 
+func TestOpenAIGatewayService_SelectAccountWithScheduler_RequiredOAuthSkipsAPIKeySticky(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(12)
+	apiKeyAccount := Account{
+		ID:          2101,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+		Priority:    0,
+	}
+	oauthAccount := Account{
+		ID:          2102,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+		Priority:    5,
+	}
+	cache := &stubGatewayCache{
+		sessionBindings: map[string]int64{
+			"openai:compact_session_hash": apiKeyAccount.ID,
+		},
+	}
+
+	svc := &OpenAIGatewayService{
+		accountRepo:        stubOpenAIAccountRepo{accounts: []Account{apiKeyAccount, oauthAccount}},
+		cache:              cache,
+		cfg:                &config.Config{},
+		concurrencyService: NewConcurrencyService(stubConcurrencyCache{}),
+	}
+
+	selection, decision, err := svc.SelectAccountWithScheduler(
+		ctx,
+		&groupID,
+		"",
+		"compact_session_hash",
+		"gpt-5.5",
+		nil,
+		OpenAIUpstreamTransportAny,
+		AccountTypeOAuth,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, oauthAccount.ID, selection.Account.ID)
+	require.Equal(t, AccountTypeOAuth, selection.Account.Type)
+	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+}
+
 func TestOpenAIGatewayService_SelectAccountWithScheduler_SessionStickyBusyKeepsSticky(t *testing.T) {
 	ctx := context.Background()
 	groupID := int64(10100)
