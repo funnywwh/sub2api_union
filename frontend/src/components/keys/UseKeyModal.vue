@@ -176,6 +176,10 @@ const copiedIndex = ref<number | null>(null)
 const activeTab = ref<string>('unix')
 const activeClientTab = ref<string>('claude')
 
+const openAICodexDefaultModel = 'gpt-5.5'
+const openAICodexContextWindow = 256000
+const openAICodexAutoCompactTokenLimit = 230000
+
 // Reset tabs when platform changes
 const defaultClientTab = computed(() => {
   switch (props.platform) {
@@ -531,14 +535,14 @@ function generateOpenAIFiles(baseUrl: string, apiKey: string): FileConfig[] {
 
   // config.toml content
   const configContent = `model_provider = "OpenAI"
-model = "gpt-5.4"
-review_model = "gpt-5.4"
+model = "${openAICodexDefaultModel}"
+review_model = "${openAICodexDefaultModel}"
 model_reasoning_effort = "xhigh"
 disable_response_storage = true
 network_access = "enabled"
 windows_wsl_setup_acknowledged = true
-model_context_window = 1000000
-model_auto_compact_token_limit = 900000
+model_context_window = ${openAICodexContextWindow}
+model_auto_compact_token_limit = ${openAICodexAutoCompactTokenLimit}
 
 [model_providers.OpenAI]
 name = "OpenAI"
@@ -570,14 +574,14 @@ function generateOpenAIWsFiles(baseUrl: string, apiKey: string): FileConfig[] {
 
   // config.toml content with WebSocket v2
   const configContent = `model_provider = "OpenAI"
-model = "gpt-5.4"
-review_model = "gpt-5.4"
+model = "${openAICodexDefaultModel}"
+review_model = "${openAICodexDefaultModel}"
 model_reasoning_effort = "xhigh"
 disable_response_storage = true
 network_access = "enabled"
 windows_wsl_setup_acknowledged = true
-model_context_window = 1000000
-model_auto_compact_token_limit = 900000
+model_context_window = ${openAICodexContextWindow}
+model_auto_compact_token_limit = ${openAICodexAutoCompactTokenLimit}
 
 [model_providers.OpenAI]
 name = "OpenAI"
