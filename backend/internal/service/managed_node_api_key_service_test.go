@@ -120,6 +120,7 @@ type managedNodeAPIKeyServiceRepoStub struct {
 	create                   func(ctx context.Context, key *ManagedNodeAPIKey, audit *ManagedNodeAPIKeyAudit) error
 	list                     func(ctx context.Context) ([]ManagedNodeAPIKey, error)
 	authenticateActiveByHash func(ctx context.Context, keyHash, ip string, usedAt time.Time, audit *ManagedNodeAPIKeyAudit) (*ManagedNodeAPIKey, error)
+	touchUsageByID           func(ctx context.Context, keyID int64, ip string, usedAt time.Time, audit *ManagedNodeAPIKeyAudit) error
 	revoke                   func(ctx context.Context, keyID int64, revokedBy *int64, revokedAt time.Time, audit *ManagedNodeAPIKeyAudit) (*ManagedNodeAPIKey, error)
 	listAudits               func(ctx context.Context, keyID int64, limit int) ([]ManagedNodeAPIKeyAudit, error)
 }
@@ -143,6 +144,13 @@ func (s *managedNodeAPIKeyServiceRepoStub) AuthenticateActiveByHash(ctx context.
 		return nil, nil
 	}
 	return s.authenticateActiveByHash(ctx, keyHash, ip, usedAt, audit)
+}
+
+func (s *managedNodeAPIKeyServiceRepoStub) TouchUsageByID(ctx context.Context, keyID int64, ip string, usedAt time.Time, audit *ManagedNodeAPIKeyAudit) error {
+	if s.touchUsageByID == nil {
+		return nil
+	}
+	return s.touchUsageByID(ctx, keyID, ip, usedAt, audit)
 }
 
 func (s *managedNodeAPIKeyServiceRepoStub) Revoke(ctx context.Context, keyID int64, revokedBy *int64, revokedAt time.Time, audit *ManagedNodeAPIKeyAudit) (*ManagedNodeAPIKey, error) {

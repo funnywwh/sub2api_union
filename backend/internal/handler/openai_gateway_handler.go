@@ -236,6 +236,10 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	failedAccountIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
 	var lastFailoverErr *service.UpstreamFailoverError
+	requiredAccountType := ""
+	if service.IsOpenAIResponsesCompactPathForTest(c) {
+		requiredAccountType = service.AccountTypeOAuth
+	}
 
 	for {
 		// Select account supporting the requested model
@@ -248,6 +252,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			reqModel,
 			failedAccountIDs,
 			service.OpenAIUpstreamTransportAny,
+			requiredAccountType,
 		)
 		if err != nil {
 			reqLog.Warn("openai.account_select_failed",

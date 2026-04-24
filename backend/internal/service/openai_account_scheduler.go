@@ -22,13 +22,14 @@ const (
 )
 
 type OpenAIAccountScheduleRequest struct {
-	GroupID            *int64
-	SessionHash        string
-	StickyAccountID    int64
-	PreviousResponseID string
-	RequestedModel     string
-	RequiredTransport  OpenAIUpstreamTransport
-	ExcludedIDs        map[int64]struct{}
+	GroupID             *int64
+	SessionHash         string
+	StickyAccountID     int64
+	PreviousResponseID  string
+	RequestedModel      string
+	RequiredTransport   OpenAIUpstreamTransport
+	RequiredAccountType string
+	ExcludedIDs         map[int64]struct{}
 }
 
 type OpenAIAccountScheduleDecision struct {
@@ -246,7 +247,7 @@ func (s *defaultOpenAIAccountScheduler) Select(
 			return nil, decision, err
 		}
 		if selection != nil && selection.Account != nil {
-			if !s.isAccountTransportCompatible(selection.Account, req.RequiredTransport) {
+			if !s.isAccountTransportCompatible(selection.Account, req.RequiredTransport) || !isOpenAIAccountTypeCompatible(selection.Account, req.RequiredAccountType) {
 				selection = nil
 			}
 		}
@@ -320,7 +321,7 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
 		return nil, nil
 	}
-	if shouldClearStickySession(account, req.RequestedModel) || !account.IsOpenAI() || !account.IsSchedulable() {
+	if shouldClearStickySession(account, req.RequestedModel) || !account.IsOpenAI() || !account.IsSchedulable() || !isOpenAIAccountTypeCompatible(account, req.RequiredAccountType) {
 		_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
 		return nil, nil
 	}
@@ -594,6 +595,9 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		if !account.IsSchedulable() || !account.IsOpenAI() {
 			continue
 		}
+		if !isOpenAIAccountTypeCompatible(account, req.RequiredAccountType) {
+			continue
+		}
 		// require_privacy_set: 跳过 privacy 未设置的账号并标记异常
 		if schedGroup != nil && schedGroup.RequirePrivacySet && !account.IsPrivacySet() {
 			_ = s.service.accountRepo.SetError(ctx, account.ID,
@@ -706,11 +710,11 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	for i := 0; i < len(selectionOrder); i++ {
 		candidate := selectionOrder[i]
 		fresh := s.service.resolveFreshSchedulableOpenAIAccount(ctx, candidate.account, req.RequestedModel)
-		if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) {
+		if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) || !isOpenAIAccountTypeCompatible(fresh, req.RequiredAccountType) {
 			continue
 		}
 		fresh = s.service.recheckSelectedOpenAIAccountFromDB(ctx, fresh, req.RequestedModel)
-		if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) {
+		if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) || !isOpenAIAccountTypeCompatible(fresh, req.RequiredAccountType) {
 			continue
 		}
 		result, acquireErr := s.service.tryAcquireAccountSlot(ctx, fresh.ID, fresh.Concurrency)
@@ -733,7 +737,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	// WaitPlan.MaxConcurrency 使用 Concurrency（非 EffectiveLoadFactor），因为 WaitPlan 控制的是 Redis 实际并发槽位等待。
 	for _, candidate := range selectionOrder {
 		fresh := s.service.resolveFreshSchedulableOpenAIAccount(ctx, candidate.account, req.RequestedModel)
-		if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) {
+		if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) || !isOpenAIAccountTypeCompatible(fresh, req.RequiredAccountType) {
 			continue
 		}
 		return &AccountSelectionResult{
@@ -759,6 +763,13 @@ func (s *defaultOpenAIAccountScheduler) isAccountTransportCompatible(account *Ac
 		return false
 	}
 	return s.service.getOpenAIWSProtocolResolver().Resolve(account).Transport == requiredTransport
+}
+
+func isOpenAIAccountTypeCompatible(account *Account, requiredType string) bool {
+	if strings.TrimSpace(requiredType) == "" {
+		return true
+	}
+	return account != nil && account.Type == requiredType
 }
 
 func (s *defaultOpenAIAccountScheduler) ReportResult(accountID int64, success bool, firstTokenMs *int) {
@@ -828,6 +839,7 @@ func (s *OpenAIGatewayService) SelectAccountWithScheduler(
 	requestedModel string,
 	excludedIDs map[int64]struct{},
 	requiredTransport OpenAIUpstreamTransport,
+	requiredAccountType ...string,
 ) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
 	decision := OpenAIAccountScheduleDecision{}
 	scheduler := s.getOpenAIAccountScheduler()
@@ -844,14 +856,20 @@ func (s *OpenAIGatewayService) SelectAccountWithScheduler(
 		}
 	}
 
+	accountType := ""
+	if len(requiredAccountType) > 0 {
+		accountType = strings.TrimSpace(requiredAccountType[0])
+	}
+
 	return scheduler.Select(ctx, OpenAIAccountScheduleRequest{
-		GroupID:            groupID,
-		SessionHash:        sessionHash,
-		StickyAccountID:    stickyAccountID,
-		PreviousResponseID: previousResponseID,
-		RequestedModel:     requestedModel,
-		RequiredTransport:  requiredTransport,
-		ExcludedIDs:        excludedIDs,
+		GroupID:             groupID,
+		SessionHash:         sessionHash,
+		StickyAccountID:     stickyAccountID,
+		PreviousResponseID:  previousResponseID,
+		RequestedModel:      requestedModel,
+		RequiredTransport:   requiredTransport,
+		RequiredAccountType: accountType,
+		ExcludedIDs:         excludedIDs,
 	})
 }
 
