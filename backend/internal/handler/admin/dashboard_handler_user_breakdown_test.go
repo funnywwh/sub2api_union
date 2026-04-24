@@ -246,6 +246,32 @@ func TestGetUserBreakdown_RequestTypeBillingModeAndSort(t *testing.T) {
 	require.Equal(t, "tokens", repo.capturedDim.SortBy)
 }
 
+func TestGetUserBreakdown_RankByAPIKey(t *testing.T) {
+	repo := &userBreakdownRepoCapture{}
+	router := newUserBreakdownRouter(repo)
+
+	req := httptest.NewRequest(http.MethodGet,
+		"/admin/dashboard/user-breakdown?start_date=2026-03-01&end_date=2026-03-16&rank_by=api_key&sort_by=actual_cost", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, "api_key", repo.capturedDim.RankBy)
+	require.Equal(t, "actual_cost", repo.capturedDim.SortBy)
+}
+
+func TestGetUserBreakdown_InvalidRankBy(t *testing.T) {
+	repo := &userBreakdownRepoCapture{}
+	router := newUserBreakdownRouter(repo)
+
+	req := httptest.NewRequest(http.MethodGet,
+		"/admin/dashboard/user-breakdown?start_date=2026-03-01&end_date=2026-03-16&rank_by=token", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusBadRequest, w.Code)
+}
+
 func TestGetUserBreakdown_UsesSnapshotCache(t *testing.T) {
 	dashboardUserBreakdownCache = newSnapshotCache(30 * time.Second)
 

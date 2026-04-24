@@ -3148,12 +3148,31 @@ func (r *usageLogRepository) GetGroupStatsWithFilters(ctx context.Context, start
 	return results, nil
 }
 
-// GetUserBreakdownStats returns per-user usage breakdown within a specific dimension.
+// GetUserBreakdownStats returns user or API-key usage breakdown within a specific dimension.
 func (r *usageLogRepository) GetUserBreakdownStats(ctx context.Context, startTime, endTime time.Time, dim usagestats.UserBreakdownDimension, limit int) (results []usagestats.UserBreakdownItem, err error) {
-	query := `
+	rankBy := strings.TrimSpace(dim.RankBy)
+	if rankBy == "" {
+		rankBy = "user"
+	}
+	apiKeyIDSelect := "0 as api_key_id"
+	apiKeyNameSelect := "'' as api_key_name"
+	apiKeyJoin := ""
+	groupBy := "ul.user_id, u.email"
+	orderTieBreaker := "user_id ASC"
+	if rankBy == "api_key" {
+		apiKeyIDSelect = "COALESCE(ul.api_key_id, 0) as api_key_id"
+		apiKeyNameSelect = "COALESCE(k.name, '') as api_key_name"
+		apiKeyJoin = "LEFT JOIN api_keys k ON k.id = ul.api_key_id"
+		groupBy = "ul.user_id, u.email, ul.api_key_id, k.name"
+		orderTieBreaker = "user_id ASC, api_key_id ASC"
+	}
+
+	query := fmt.Sprintf(`
 		SELECT
 			COALESCE(ul.user_id, 0) as user_id,
 			COALESCE(u.email, '') as email,
+			%s,
+			%s,
 			COUNT(*) as requests,
 			COALESCE(SUM(ul.input_tokens + ul.output_tokens + ul.cache_creation_tokens + ul.cache_read_tokens), 0) as total_tokens,
 			COALESCE(SUM(ul.total_cost), 0) as cost,
@@ -3161,8 +3180,9 @@ func (r *usageLogRepository) GetUserBreakdownStats(ctx context.Context, startTim
 			COALESCE(SUM(COALESCE(ul.account_stats_cost, ul.total_cost) * COALESCE(ul.account_rate_multiplier, 1)), 0) as account_cost
 		FROM usage_logs ul
 		LEFT JOIN users u ON u.id = ul.user_id
+		%s
 		WHERE ul.created_at >= $1 AND ul.created_at < $2
-	`
+	`, apiKeyIDSelect, apiKeyNameSelect, apiKeyJoin)
 	args := []any{startTime, endTime}
 
 	if dim.GroupID > 0 {
@@ -3200,18 +3220,18 @@ func (r *usageLogRepository) GetUserBreakdownStats(ctx context.Context, startTim
 		args = append(args, dim.BillingMode)
 	}
 
-	orderBy := "actual_cost DESC, total_tokens DESC, user_id ASC"
+	orderBy := fmt.Sprintf("actual_cost DESC, total_tokens DESC, %s", orderTieBreaker)
 	switch strings.TrimSpace(dim.SortBy) {
 	case "tokens", "total_tokens":
-		orderBy = "total_tokens DESC, actual_cost DESC, user_id ASC"
+		orderBy = fmt.Sprintf("total_tokens DESC, actual_cost DESC, %s", orderTieBreaker)
 	case "requests":
-		orderBy = "requests DESC, total_tokens DESC, user_id ASC"
+		orderBy = fmt.Sprintf("requests DESC, total_tokens DESC, %s", orderTieBreaker)
 	case "", "actual_cost", "cost":
 	default:
-		orderBy = "actual_cost DESC, total_tokens DESC, user_id ASC"
+		orderBy = fmt.Sprintf("actual_cost DESC, total_tokens DESC, %s", orderTieBreaker)
 	}
 
-	query += " GROUP BY ul.user_id, u.email ORDER BY " + orderBy
+	query += " GROUP BY " + groupBy + " ORDER BY " + orderBy
 	if limit > 0 {
 		query += fmt.Sprintf(" LIMIT %d", limit)
 	}
@@ -3233,6 +3253,8 @@ func (r *usageLogRepository) GetUserBreakdownStats(ctx context.Context, startTim
 		if err := rows.Scan(
 			&row.UserID,
 			&row.Email,
+			&row.APIKeyID,
+			&row.APIKeyName,
 			&row.Requests,
 			&row.TotalTokens,
 			&row.Cost,
