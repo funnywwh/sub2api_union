@@ -168,6 +168,7 @@ export interface UserBreakdownParams {
   endpoint_type?: 'inbound' | 'upstream' | 'path'
   limit?: number
   sort_by?: 'actual_cost' | 'tokens' | 'requests'
+  rank_by?: 'user' | 'api_key'
   // Additional filter conditions
   user_id?: number
   api_key_id?: number

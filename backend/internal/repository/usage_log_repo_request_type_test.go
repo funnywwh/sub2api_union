@@ -476,8 +476,8 @@ func TestUsageLogRepositoryGetUserBreakdownStatsSupportsRequestTypeBillingModeAn
 	requestType := int16(service.RequestTypeStream)
 	billingType := int8(1)
 
-	rows := sqlmock.NewRows([]string{"user_id", "email", "requests", "total_tokens", "cost", "actual_cost", "account_cost"}).
-		AddRow(int64(7), "rank@example.com", int64(3), int64(1200), 1.5, 1.2, 0.9)
+	rows := sqlmock.NewRows([]string{"user_id", "email", "api_key_id", "api_key_name", "requests", "total_tokens", "cost", "actual_cost", "account_cost"}).
+		AddRow(int64(7), "rank@example.com", int64(0), "", int64(3), int64(1200), 1.5, 1.2, 0.9)
 
 	mock.ExpectQuery("SELECT\\s+COALESCE\\(ul.user_id, 0\\) as user_id,.*request_type = \\$3 OR \\(request_type = 0 AND stream = TRUE AND openai_ws_mode = FALSE\\).*ul.billing_type = \\$4.*ul.billing_mode = \\$5.*ORDER BY total_tokens DESC, actual_cost DESC, user_id ASC").
 		WithArgs(start, end, requestType, billingType, "token").
@@ -492,6 +492,33 @@ func TestUsageLogRepositoryGetUserBreakdownStatsSupportsRequestTypeBillingModeAn
 	require.NoError(t, err)
 	require.Equal(t, []usagestats.UserBreakdownItem{
 		{UserID: 7, Email: "rank@example.com", Requests: 3, TotalTokens: 1200, Cost: 1.5, ActualCost: 1.2, AccountCost: 0.9},
+	}, got)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUsageLogRepositoryGetUserBreakdownStatsSupportsAPIKeyRanking(t *testing.T) {
+	db, mock := newSQLMock(t)
+	repo := &usageLogRepository{sql: db}
+
+	start := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := start.Add(24 * time.Hour)
+
+	rows := sqlmock.NewRows([]string{"user_id", "email", "api_key_id", "api_key_name", "requests", "total_tokens", "cost", "actual_cost", "account_cost"}).
+		AddRow(int64(7), "rank@example.com", int64(11), "primary", int64(3), int64(1200), 1.5, 1.2, 0.9).
+		AddRow(int64(7), "rank@example.com", int64(12), "secondary", int64(2), int64(900), 1.1, 1.0, 0.7)
+
+	mock.ExpectQuery("LEFT JOIN api_keys k ON k.id = ul.api_key_id.*GROUP BY ul.user_id, u.email, ul.api_key_id, k.name ORDER BY actual_cost DESC, total_tokens DESC, user_id ASC, api_key_id ASC").
+		WithArgs(start, end).
+		WillReturnRows(rows)
+
+	got, err := repo.GetUserBreakdownStats(context.Background(), start, end, usagestats.UserBreakdownDimension{
+		RankBy: "api_key",
+		SortBy: "actual_cost",
+	}, 12)
+	require.NoError(t, err)
+	require.Equal(t, []usagestats.UserBreakdownItem{
+		{UserID: 7, Email: "rank@example.com", APIKeyID: 11, APIKeyName: "primary", Requests: 3, TotalTokens: 1200, Cost: 1.5, ActualCost: 1.2, AccountCost: 0.9},
+		{UserID: 7, Email: "rank@example.com", APIKeyID: 12, APIKeyName: "secondary", Requests: 2, TotalTokens: 900, Cost: 1.1, ActualCost: 1.0, AccountCost: 0.7},
 	}, got)
 	require.NoError(t, mock.ExpectationsWereMet())
 }

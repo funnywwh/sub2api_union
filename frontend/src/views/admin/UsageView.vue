@@ -69,7 +69,9 @@
           :total-actual-cost="usageStats?.total_actual_cost || 0"
           :loading="userRankingLoading"
           :error="userRankingError"
+          :mode="userRankingMode"
           @userClick="handleUserClick"
+          @mode-change="handleUserRankingModeChange"
         />
       </div>
       <UsageFilters v-model="filters" :start-date="startDate" :end-date="endDate" :exporting="exporting" @change="applyFilters" @refresh="refreshData" @reset="resetFilters" @cleanup="openCleanupDialog" @export="exportToExcel">
@@ -163,12 +165,16 @@ const appStore = useAppStore()
 type DistributionMetric = 'tokens' | 'actual_cost'
 type EndpointSource = 'inbound' | 'upstream' | 'path'
 type ModelDistributionSource = 'requested' | 'upstream' | 'mapping'
+type RankingSortBy = 'tokens' | 'actual_cost'
+type RankingRankBy = 'user' | 'api_key'
+type RankingMode = 'api_key' | 'tokens' | 'actual_cost'
 const route = useRoute()
 const usageStats = ref<AdminUsageStatsResponse | null>(null); const usageLogs = ref<AdminUsageLog[]>([]); const loading = ref(false); const exporting = ref(false)
 const trendData = ref<TrendDataPoint[]>([]); const requestedModelStats = ref<ModelStat[]>([]); const upstreamModelStats = ref<ModelStat[]>([]); const mappingModelStats = ref<ModelStat[]>([]); const groupStats = ref<GroupStat[]>([]); const chartsLoading = ref(false); const modelStatsLoading = ref(false); const granularity = ref<'day' | 'hour'>('hour')
 const userRankingItems = ref<UserBreakdownItem[]>([])
 const userRankingLoading = ref(false)
 const userRankingError = ref(false)
+const userRankingMode = ref<RankingMode>('tokens')
 const modelDistributionMetric = ref<DistributionMetric>('tokens')
 const modelDistributionSource = ref<ModelDistributionSource>('requested')
 const loadedModelSources = reactive<Record<ModelDistributionSource, boolean>>({
@@ -410,6 +416,8 @@ const loadUserRanking = async () => {
   try {
     const requestType = filters.value.request_type
     const legacyStream = requestType ? requestTypeToLegacyStream(requestType) : filters.value.stream
+    const sortBy: RankingSortBy = userRankingMode.value === 'actual_cost' ? 'actual_cost' : 'tokens'
+    const rankBy: RankingRankBy = userRankingMode.value === 'api_key' ? 'api_key' : 'user'
     const response = await adminAPI.dashboard.getUserBreakdown({
       start_date: filters.value.start_date || startDate.value,
       end_date: filters.value.end_date || endDate.value,
@@ -422,7 +430,8 @@ const loadUserRanking = async () => {
       stream: legacyStream === null ? undefined : legacyStream,
       billing_type: filters.value.billing_type,
       billing_mode: filters.value.billing_mode,
-      sort_by: 'tokens',
+      sort_by: sortBy,
+      rank_by: rankBy,
       limit: 12
     })
     if (seq !== userRankingReqSeq) return
@@ -481,6 +490,10 @@ const refreshData = () => {
   loadStats()
   loadModelStats(modelDistributionSource.value, true)
   loadChartData()
+  loadUserRanking()
+}
+const handleUserRankingModeChange = (mode: RankingMode) => {
+  userRankingMode.value = mode
   loadUserRanking()
 }
 const resetFilters = () => {

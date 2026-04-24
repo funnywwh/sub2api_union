@@ -61,6 +61,7 @@ type dashboardUserBreakdownCacheKey struct {
 	Endpoint     string `json:"endpoint"`
 	EndpointType string `json:"endpoint_type"`
 	SortBy       string `json:"sort_by"`
+	RankBy       string `json:"rank_by"`
 	UserID       int64  `json:"user_id"`
 	APIKeyID     int64  `json:"api_key_id"`
 	AccountID    int64  `json:"account_id"`
@@ -237,6 +238,7 @@ func (h *DashboardHandler) getUserBreakdownCached(
 		Endpoint:     dim.Endpoint,
 		EndpointType: dim.EndpointType,
 		SortBy:       dim.SortBy,
+		RankBy:       dim.RankBy,
 		UserID:       dim.UserID,
 		APIKeyID:     dim.APIKeyID,
 		AccountID:    dim.AccountID,

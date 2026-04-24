@@ -1241,6 +1241,8 @@ export interface GroupStat {
 export interface UserBreakdownItem {
   user_id: number
   email: string
+  api_key_id?: number
+  api_key_name?: string
   requests: number
   total_tokens: number
   cost: number

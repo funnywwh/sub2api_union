@@ -162,10 +162,12 @@ type UserSpendingRankingResponse struct {
 	TotalTokens     int64                     `json:"total_tokens"`
 }
 
-// UserBreakdownItem represents per-user usage breakdown within a dimension (group, model, endpoint).
+// UserBreakdownItem represents user or API-key usage breakdown within a dimension (group, model, endpoint).
 type UserBreakdownItem struct {
 	UserID      int64   `json:"user_id"`
 	Email       string  `json:"email"`
+	APIKeyID    int64   `json:"api_key_id,omitempty"`
+	APIKeyName  string  `json:"api_key_name,omitempty"`
 	Requests    int64   `json:"requests"`
 	TotalTokens int64   `json:"total_tokens"`
 	Cost        float64 `json:"cost"`         // 标准计费
@@ -181,6 +183,7 @@ type UserBreakdownDimension struct {
 	Endpoint     string // filter by endpoint value (non-empty to enable)
 	EndpointType string // "inbound", "upstream", or "path"
 	SortBy       string // "actual_cost", "tokens", or "requests"
+	RankBy       string // "user" or "api_key"
 	// Additional filter conditions
 	UserID      int64  // filter by user_id (>0 to enable)
 	APIKeyID    int64  // filter by api_key_id (>0 to enable)

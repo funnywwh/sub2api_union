@@ -687,6 +687,15 @@ func (h *DashboardHandler) GetUserBreakdown(c *gin.Context) {
 		response.BadRequest(c, "Invalid sort_by, use actual_cost/tokens/requests")
 		return
 	}
+	switch rankBy := strings.TrimSpace(c.Query("rank_by")); rankBy {
+	case "", "user":
+		dim.RankBy = "user"
+	case "api_key", "apikey":
+		dim.RankBy = "api_key"
+	default:
+		response.BadRequest(c, "Invalid rank_by, use user/api_key")
+		return
+	}
 
 	limit := 50
 	if v := c.Query("limit"); v != "" {
