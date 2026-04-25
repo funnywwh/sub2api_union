@@ -133,6 +133,19 @@ func TestReadRequestBodyWithPrealloc_MaxBytesError(t *testing.T) {
 	require.ErrorAs(t, err, &maxErr)
 }
 
+func TestResolveOpenAIResponsesRoutingModel(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+
+	c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses/compact", nil)
+	require.Equal(t, "gpt-5.4", resolveOpenAIResponsesRoutingModel(c, "gpt-5.5"))
+
+	c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
+	require.Equal(t, "gpt-5.5", resolveOpenAIResponsesRoutingModel(c, "gpt-5.5"))
+}
+
 func TestOpenAIEnsureForwardErrorResponse_WritesFallbackWhenNotWritten(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()

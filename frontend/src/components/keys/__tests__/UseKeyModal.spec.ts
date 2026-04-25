@@ -41,7 +41,7 @@ describe('UseKeyModal', () => {
     expect(codeBlock.exists()).toBe(true)
     expect(codeBlock.text()).toContain('model = "gpt-5.5"')
     expect(codeBlock.text()).toContain('review_model = "gpt-5.5"')
-    expect(codeBlock.text()).toContain('model_context_window = 256000')
+    expect(codeBlock.text()).toContain('model_context_window = 1050000')
     expect(codeBlock.text()).toContain('model_auto_compact_token_limit = 230000')
   })
 
@@ -76,7 +76,7 @@ describe('UseKeyModal', () => {
     const codeBlock = wrapper.find('pre code')
     expect(codeBlock.exists()).toBe(true)
     expect(codeBlock.text()).toContain('model = "gpt-5.5"')
-    expect(codeBlock.text()).toContain('model_context_window = 256000')
+    expect(codeBlock.text()).toContain('model_context_window = 1050000')
     expect(codeBlock.text()).toContain('model_auto_compact_token_limit = 230000')
     expect(codeBlock.text()).toContain('responses_websockets_v2 = true')
   })

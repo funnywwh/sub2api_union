@@ -1982,6 +1982,9 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			disablePatch()
 		}
 		if codexResult.NormalizedModel != "" {
+			if codexResult.NormalizedModel != upstreamModel && isOpenAIResponsesCompactPath(c) {
+				logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Compact upstream model fallback: %s -> %s (account: %s, isCodexCLI: %v)", upstreamModel, codexResult.NormalizedModel, account.Name, isCodexCLI)
+			}
 			upstreamModel = codexResult.NormalizedModel
 		}
 		if codexResult.PromptCacheKey != "" {
@@ -2485,6 +2488,11 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		reqStream = gjson.GetBytes(body, "stream").Bool()
 	}
 
+	upstreamModel := strings.TrimSpace(gjson.GetBytes(body, "model").String())
+	if upstreamModel == "" {
+		upstreamModel = strings.TrimSpace(reqModel)
+	}
+
 	sanitizedBody, sanitized, err := sanitizeEmptyBase64InputImagesInOpenAIBody(body)
 	if err != nil {
 		return nil, err
@@ -2601,6 +2609,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		RequestID:       resp.Header.Get("x-request-id"),
 		Usage:           *usage,
 		Model:           reqModel,
+		UpstreamModel:   upstreamModel,
 		ServiceTier:     extractOpenAIServiceTierFromBody(body),
 		ReasoningEffort: reasoningEffort,
 		Stream:          reqStream,
@@ -4297,7 +4306,17 @@ func normalizeOpenAICompactRequestBody(body []byte) ([]byte, bool, error) {
 	}
 
 	normalized := []byte(`{}`)
-	for _, field := range []string{"model", "input", "instructions", "previous_response_id"} {
+	for _, field := range []string{
+		"model",
+		"input",
+		"instructions",
+		"tools",
+		"tool_choice",
+		"parallel_tool_calls",
+		"reasoning",
+		"text",
+		"previous_response_id",
+	} {
 		value := gjson.GetBytes(body, field)
 		if !value.Exists() {
 			continue
@@ -4837,6 +4856,13 @@ func extractOpenAIRequestMetaFromBody(body []byte) (model string, stream bool, p
 	return model, stream, promptCacheKey
 }
 
+func hasExplicitOpenAIReasoningEffortInBody(body []byte) bool {
+	if len(body) == 0 {
+		return false
+	}
+	return gjson.GetBytes(body, "reasoning.effort").Exists() || gjson.GetBytes(body, "reasoning_effort").Exists()
+}
+
 // normalizeOpenAIPassthroughOAuthBody 将透传 OAuth 请求体收敛为旧链路关键行为：
 // 1) store=false 2) 非 compact 保持 stream=true；compact 强制 stream=false
 func normalizeOpenAIPassthroughOAuthBody(body []byte, compact bool) ([]byte, bool, error) {
@@ -4848,6 +4874,27 @@ func normalizeOpenAIPassthroughOAuthBody(body []byte, compact bool) ([]byte, boo
 	changed := false
 
 	if compact {
+		if model := strings.TrimSpace(gjson.GetBytes(normalized, "model").String()); model != "" {
+			compactModel := NormalizeOpenAICompactRoutingModel(model)
+			if compactModel != "" && compactModel != model {
+				next, err := sjson.SetBytes(normalized, "model", compactModel)
+				if err != nil {
+					return body, false, fmt.Errorf("normalize passthrough body compact model: %w", err)
+				}
+				normalized = next
+				changed = true
+			}
+			if !hasExplicitOpenAIReasoningEffortInBody(normalized) {
+				if derivedEffort := deriveOpenAIReasoningEffortFromModel(model); derivedEffort != "" {
+					next, err := sjson.SetBytes(normalized, "reasoning.effort", derivedEffort)
+					if err != nil {
+						return body, false, fmt.Errorf("normalize passthrough body compact reasoning: %w", err)
+					}
+					normalized = next
+					changed = true
+				}
+			}
+		}
 		if store := gjson.GetBytes(normalized, "store"); store.Exists() {
 			next, err := sjson.DeleteBytes(normalized, "store")
 			if err != nil {
