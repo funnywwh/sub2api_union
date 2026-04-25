@@ -1469,6 +1469,61 @@ func TestOpenAIResponsesRequestPathSuffix(t *testing.T) {
 	}
 }
 
+func TestNormalizeOpenAICompactRequestBodyPreservesCodexCompactFields(t *testing.T) {
+	body := []byte(`{
+		"model":"gpt-5.4",
+		"input":[{"type":"message","role":"user","content":"hello"}],
+		"instructions":"compact this conversation",
+		"tools":[{"type":"function","function":{"name":"apply_patch"}}],
+		"tool_choice":"auto",
+		"parallel_tool_calls":true,
+		"reasoning":{"effort":"high"},
+		"text":{"verbosity":"medium"},
+		"previous_response_id":"resp_123",
+		"store":false,
+		"stream":false
+	}`)
+
+	normalized, changed, err := normalizeOpenAICompactRequestBody(body)
+	require.NoError(t, err)
+	require.True(t, changed)
+
+	normalizedText := string(normalized)
+	for _, field := range []string{
+		`"model"`,
+		`"input"`,
+		`"instructions"`,
+		`"tools"`,
+		`"tool_choice"`,
+		`"parallel_tool_calls"`,
+		`"reasoning"`,
+		`"text"`,
+		`"previous_response_id"`,
+	} {
+		require.Contains(t, normalizedText, field)
+	}
+	require.NotContains(t, normalizedText, `"store"`)
+	require.NotContains(t, normalizedText, `"stream"`)
+}
+
+func TestNormalizeOpenAIPassthroughOAuthBody_CompactDerivesReasoningFromModelSuffix(t *testing.T) {
+	body := []byte(`{
+		"model":"gpt-5.4-xhigh",
+		"store":true,
+		"stream":true,
+		"instructions":"compact this conversation",
+		"input":[{"type":"message","role":"user","content":"hello"}]
+	}`)
+
+	normalized, changed, err := normalizeOpenAIPassthroughOAuthBody(body, true)
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.Equal(t, "gpt-5.4", gjson.GetBytes(normalized, "model").String())
+	require.Equal(t, "xhigh", gjson.GetBytes(normalized, "reasoning.effort").String())
+	require.False(t, gjson.GetBytes(normalized, "store").Exists())
+	require.False(t, gjson.GetBytes(normalized, "stream").Exists())
+}
+
 func TestOpenAIBuildUpstreamRequestOpenAIPassthroughPreservesCompactPath(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()

@@ -93,6 +93,9 @@ func applyCodexOAuthTransform(reqBody map[string]any, isCodexCLI bool, isCompact
 		model = v
 	}
 	normalizedModel := strings.TrimSpace(model)
+	if isCompact {
+		normalizedModel = NormalizeOpenAICompactRoutingModel(normalizedModel)
+	}
 	if normalizedModel != "" {
 		if model != normalizedModel {
 			reqBody["model"] = normalizedModel
@@ -223,6 +226,18 @@ func applyCodexOAuthTransform(reqBody map[string]any, isCodexCLI bool, isCompact
 	}
 
 	return result
+}
+
+// NormalizeOpenAICompactRoutingModel returns the canonical model used for compact
+// routing/account selection. Compact requests currently fall back from GPT-5.5
+// family requests to GPT-5.4 while keeping the rest of the OpenAI/Codex
+// normalization behavior unchanged.
+func NormalizeOpenAICompactRoutingModel(model string) string {
+	normalized := normalizeCodexModel(strings.TrimSpace(model))
+	if normalized == "gpt-5.5" {
+		return "gpt-5.4"
+	}
+	return normalized
 }
 
 func normalizeCodexModel(model string) string {

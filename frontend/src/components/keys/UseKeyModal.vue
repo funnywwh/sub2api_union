@@ -177,7 +177,7 @@ const activeTab = ref<string>('unix')
 const activeClientTab = ref<string>('claude')
 
 const openAICodexDefaultModel = 'gpt-5.5'
-const openAICodexContextWindow = 256000
+const openAICodexContextWindow = 1050000
 const openAICodexAutoCompactTokenLimit = 230000
 
 // Reset tabs when platform changes
@@ -700,8 +700,8 @@ function generateOpenCodeConfig(platform: string, baseUrl: string, apiKey: strin
     'gpt-5.5': {
       name: 'GPT-5.5',
       limit: {
-        // Keep this conservative until the official API model card is published.
-        context: 256000,
+        // Align GPT-5.5 with the current official API model card and GPT-5.4.
+        context: openAICodexContextWindow,
         output: 128000
       },
       options: {

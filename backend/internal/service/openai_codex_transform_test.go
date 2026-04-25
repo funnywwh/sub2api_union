@@ -130,6 +130,50 @@ func TestApplyCodexOAuthTransform_ExplicitStoreTrueForcedFalse(t *testing.T) {
 	require.False(t, store)
 }
 
+func TestApplyCodexOAuthTransform_CompactFallsBackGPT55ToGPT54(t *testing.T) {
+	reqBody := map[string]any{
+		"model":  "gpt-5.5",
+		"store":  true,
+		"stream": true,
+	}
+
+	result := applyCodexOAuthTransform(reqBody, true, true)
+
+	require.True(t, result.Modified)
+	require.Equal(t, "gpt-5.4", result.NormalizedModel)
+	require.Equal(t, "gpt-5.4", reqBody["model"])
+}
+
+func TestApplyCodexOAuthTransform_NonCompactPreservesGPT55(t *testing.T) {
+	reqBody := map[string]any{
+		"model": "gpt-5.5",
+	}
+
+	result := applyCodexOAuthTransform(reqBody, true, false)
+
+	require.Equal(t, "gpt-5.5", result.NormalizedModel)
+	require.Equal(t, "gpt-5.5", reqBody["model"])
+}
+
+func TestNormalizeOpenAICompactRoutingModel(t *testing.T) {
+	tests := []struct {
+		name  string
+		model string
+		want  string
+	}{
+		{name: "gpt55 falls back to gpt54", model: "gpt-5.5", want: "gpt-5.4"},
+		{name: "gpt55 high still routes as gpt54", model: "gpt-5.5-high", want: "gpt-5.4"},
+		{name: "gpt54 xhigh routes as base gpt54", model: "gpt-5.4-xhigh", want: "gpt-5.4"},
+		{name: "codex spark keeps existing normalization", model: "gpt-5.3-codex-spark", want: "gpt-5.3-codex"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, NormalizeOpenAICompactRoutingModel(tt.model))
+		})
+	}
+}
+
 func TestApplyCodexOAuthTransform_CompactForcesNonStreaming(t *testing.T) {
 	reqBody := map[string]any{
 		"model":  "gpt-5.1-codex",
