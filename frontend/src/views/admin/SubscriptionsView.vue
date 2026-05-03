@@ -653,8 +653,28 @@
       :confirm-text="t('admin.subscriptions.resetQuota')"
       :cancel-text="t('common.cancel')"
       @confirm="confirmResetQuota"
-      @cancel="showResetQuotaConfirm = false"
-    />
+      @cancel="closeResetQuotaDialog"
+    >
+      <div class="rounded-lg bg-gray-50 p-3 dark:bg-dark-700/60">
+        <p class="mb-3 text-xs font-medium text-gray-500 dark:text-gray-400">
+          {{ t('admin.subscriptions.resetQuotaPeriods') }}
+        </p>
+        <div class="grid grid-cols-3 gap-2">
+          <label
+            v-for="period in resetQuotaPeriodOptions"
+            :key="period.key"
+            class="flex cursor-pointer items-center justify-center gap-2 rounded-md border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-700 transition-colors hover:border-primary-300 hover:bg-primary-50 dark:border-dark-600 dark:bg-dark-800 dark:text-gray-200 dark:hover:border-primary-600 dark:hover:bg-primary-900/20"
+          >
+            <input
+              v-model="resetQuotaForm[period.key]"
+              type="checkbox"
+              class="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500 dark:border-dark-500 dark:bg-dark-700"
+            />
+            <span>{{ period.label }}</span>
+          </label>
+        </div>
+      </div>
+    </ConfirmDialog>
     <!-- Subscription Guide Modal -->
     <teleport to="body">
       <transition name="modal">
@@ -770,6 +790,8 @@ interface GroupOption {
   subscriptionType: SubscriptionType
   rate: number
 }
+
+type ResetQuotaPeriodKey = 'daily' | 'weekly' | 'monthly'
 
 // Guide modal state
 const showGuideModal = ref(false)
@@ -945,6 +967,18 @@ const resettingSubscription = ref<UserSubscription | null>(null)
 const resettingQuota = ref(false)
 const extendingSubscription = ref<UserSubscription | null>(null)
 const revokingSubscription = ref<UserSubscription | null>(null)
+
+const resetQuotaForm = reactive<Record<ResetQuotaPeriodKey, boolean>>({
+  daily: true,
+  weekly: true,
+  monthly: true
+})
+
+const resetQuotaPeriodOptions = computed<Array<{ key: ResetQuotaPeriodKey; label: string }>>(() => [
+  { key: 'daily', label: t('admin.subscriptions.resetQuotaDaily') },
+  { key: 'weekly', label: t('admin.subscriptions.resetQuotaWeekly') },
+  { key: 'monthly', label: t('admin.subscriptions.resetQuotaMonthly') }
+])
 
 const assignForm = reactive({
   user_id: null as number | null,
@@ -1262,15 +1296,32 @@ const confirmRevoke = async () => {
 
 const handleResetQuota = (subscription: UserSubscription) => {
   resettingSubscription.value = subscription
+  resetQuotaForm.daily = true
+  resetQuotaForm.weekly = true
+  resetQuotaForm.monthly = true
   showResetQuotaConfirm.value = true
+}
+
+const closeResetQuotaDialog = () => {
+  showResetQuotaConfirm.value = false
+  resettingSubscription.value = null
 }
 
 const confirmResetQuota = async () => {
   if (!resettingSubscription.value) return
   if (resettingQuota.value) return
+  const options = {
+    daily: resetQuotaForm.daily,
+    weekly: resetQuotaForm.weekly,
+    monthly: resetQuotaForm.monthly
+  }
+  if (!options.daily && !options.weekly && !options.monthly) {
+    appStore.showError(t('admin.subscriptions.selectResetQuotaPeriod'))
+    return
+  }
   resettingQuota.value = true
   try {
-    await adminAPI.subscriptions.resetQuota(resettingSubscription.value.id, { daily: true, weekly: true, monthly: true })
+    await adminAPI.subscriptions.resetQuota(resettingSubscription.value.id, options)
     appStore.showSuccess(t('admin.subscriptions.quotaResetSuccess'))
     showResetQuotaConfirm.value = false
     resettingSubscription.value = null
