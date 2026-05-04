@@ -697,6 +697,11 @@ func (s *OpenAIGatewayService) forwardChatCompletionsPassthrough(
 	}
 	upstreamReq.Header.Set("Content-Type", "application/json")
 	upstreamReq.Header.Set("Authorization", "Bearer "+token)
+	// Forward client User-Agent so third-party providers (e.g., Kimi Coding)
+	// that gate on agent identity accept the request.
+	if ua := c.GetHeader("User-Agent"); ua != "" {
+		upstreamReq.Header.Set("User-Agent", ua)
+	}
 
 	// 5. Send request
 	proxyURL := ""
