@@ -58,6 +58,8 @@ func TestBuildUpstreamChatCompletionsURL(t *testing.T) {
 		{"trailing slash", "https://api.deepseek.com/", "https://api.deepseek.com/v1/chat/completions"},
 		{"local ollama", "http://localhost:11434", "http://localhost:11434/v1/chat/completions"},
 		{"local with v1", "http://localhost:11434/v1", "http://localhost:11434/v1/chat/completions"},
+		{"glm with v4", "https://open.bigmodel.cn/api/coding/paas/v4", "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions"},
+		{"with v2", "https://example.com/api/v2", "https://example.com/api/v2/chat/completions"},
 	}
 
 	for _, tt := range tests {
