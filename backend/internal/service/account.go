@@ -6,6 +6,7 @@ import (
 	"errors"
 	"hash/fnv"
 	"log/slog"
+	"net/url"
 	"reflect"
 	"sort"
 	"strconv"
@@ -988,6 +989,26 @@ func (a *Account) GetOpenAIBaseURL() string {
 		}
 	}
 	return "https://api.openai.com"
+}
+
+// IsOpenAIOfficial returns true if the account targets OpenAI's official API.
+// Non-OpenAI-platform accounts, OAuth accounts, and API Key accounts without a
+// custom base_url are all considered "official" (they hit api.openai.com).
+// API Key accounts with a custom base_url pointing to a non-OpenAI host are
+// considered third-party (e.g., DeepSeek, Ollama).
+func (a *Account) IsOpenAIOfficial() bool {
+	if !a.IsOpenAI() || a.Type != AccountTypeAPIKey {
+		return true
+	}
+	baseURL := a.GetOpenAIBaseURL()
+	if baseURL == "" || baseURL == "https://api.openai.com" {
+		return true
+	}
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return true
+	}
+	return u.Host == "api.openai.com" || u.Host == "chatgpt.com"
 }
 
 func (a *Account) GetOpenAIAccessToken() string {
