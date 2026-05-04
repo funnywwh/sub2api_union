@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -913,12 +914,15 @@ func (s *OpenAIGatewayService) handlePassthroughStreamingResponse(
 //   - base ends with /v1          → append /chat/completions
 //   - base ends with /chat/completions → return as-is
 //   - other                       → append /v1/chat/completions
+// versionSuffixRe matches a trailing version path segment like /v1, /v4, /v2, etc.
+var versionSuffixRe = regexp.MustCompile(`/v\d+$`)
+
 func buildUpstreamChatCompletionsURL(base string) string {
 	normalized := strings.TrimRight(strings.TrimSpace(base), "/")
 	if strings.HasSuffix(normalized, "/chat/completions") {
 		return normalized
 	}
-	if strings.HasSuffix(normalized, "/v1") {
+	if versionSuffixRe.MatchString(normalized) {
 		return normalized + "/chat/completions"
 	}
 	return normalized + "/v1/chat/completions"
