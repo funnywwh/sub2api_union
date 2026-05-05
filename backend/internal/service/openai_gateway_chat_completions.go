@@ -697,11 +697,15 @@ func (s *OpenAIGatewayService) forwardChatCompletionsPassthrough(
 	}
 	upstreamReq.Header.Set("Content-Type", "application/json")
 	upstreamReq.Header.Set("Authorization", "Bearer "+token)
-	// Forward client User-Agent so third-party providers (e.g., Kimi Coding)
-	// that gate on agent identity accept the request.
-	if ua := c.GetHeader("User-Agent"); ua != "" {
-		upstreamReq.Header.Set("User-Agent", ua)
+	// Third-party providers (e.g., Kimi Coding) whitelist specific agent User-Agents.
+	// The client's original UA may not be accepted (e.g., codex-cli → Kimi rejects).
+	// Use the client UA only if it's a known-accepted identity; otherwise default
+	// to "claude-code" which is widely accepted by major providers.
+	ua := c.GetHeader("User-Agent")
+	if !isAcceptedByThirdPartyUpstream(ua) {
+		ua = "claude-code/1.0.0"
 	}
+	upstreamReq.Header.Set("User-Agent", ua)
 
 	// 5. Send request
 	proxyURL := ""
@@ -922,6 +926,27 @@ func (s *OpenAIGatewayService) handlePassthroughStreamingResponse(
 // versionSuffixRe matches a trailing version path segment like /v1, /v4, /v2, etc.
 var versionSuffixRe = regexp.MustCompile(`/v\d+$`)
 
+// isAcceptedByThirdPartyUpstream returns true if the UA string is known to be
+// accepted by third-party provider whitelists (e.g., Kimi Coding accepts:
+// Kimi CLI, Claude Code, Roo Code, Kilo Code).
+// Unrecognized agent UAs (e.g., codex-cli) should NOT be forwarded because
+// they may be rejected even though they look like agent clients.
+func isAcceptedByThirdPartyUpstream(ua string) bool {
+	if ua == "" {
+		return false
+	}
+	low := strings.ToLower(ua)
+	for _, keyword := range []string{
+		"claude-code", "kimi", "roo-code", "roo code",
+		"kilo-code", "kilo code",
+	} {
+		if strings.Contains(low, keyword) {
+			return true
+		}
+	}
+	return false
+}
+
 func buildUpstreamChatCompletionsURL(base string) string {
 	normalized := strings.TrimRight(strings.TrimSpace(base), "/")
 	if strings.HasSuffix(normalized, "/chat/completions") {
@@ -931,4 +956,563 @@ func buildUpstreamChatCompletionsURL(base string) string {
 		return normalized + "/chat/completions"
 	}
 	return normalized + "/v1/chat/completions"
+}
+
+// ForwardResponsesPassthrough converts a Responses API request to Chat Completions
+// format, forwards it to a third-party OpenAI-compatible upstream (e.g., Kimi),
+// then converts the Chat Completions response back to Responses API format.
+// This is used when Codex (which uses the Responses API) targets a non-OpenAI provider.
+func (s *OpenAIGatewayService) ForwardResponsesPassthrough(
+	ctx context.Context,
+	c *gin.Context,
+	account *Account,
+	body []byte,
+	defaultMappedModel string,
+) (*OpenAIForwardResult, error) {
+	startTime := time.Now()
+
+	// ── 1. Parse Responses request & convert to Chat Completions ──
+	var respReq apicompat.ResponsesRequest
+	if err := json.Unmarshal(body, &respReq); err != nil {
+		return nil, fmt.Errorf("parse responses request: %w", err)
+	}
+	originalModel := respReq.Model
+
+	messages, err := convertResponsesInputToMessages(respReq)
+	if err != nil {
+		return nil, fmt.Errorf("convert responses to chat completions: %w", err)
+	}
+
+	chatReq := apicompat.ChatCompletionsRequest{
+		Model:    respReq.Model,
+		Messages: messages,
+		Stream:   respReq.Stream,
+	}
+	if respReq.MaxOutputTokens != nil {
+		chatReq.MaxCompletionTokens = respReq.MaxOutputTokens
+	}
+	if respReq.Temperature != nil {
+		chatReq.Temperature = respReq.Temperature
+	}
+	if respReq.TopP != nil {
+		chatReq.TopP = respReq.TopP
+	}
+	if respReq.Stream {
+		chatReq.StreamOptions = &apicompat.ChatStreamOptions{IncludeUsage: true}
+	}
+
+	chatBody, err := json.Marshal(chatReq)
+	if err != nil {
+		return nil, fmt.Errorf("marshal chat completions request: %w", err)
+	}
+
+	// ── 2. Resolve model mapping ──
+	billingModel := resolveOpenAIForwardModel(account, originalModel, defaultMappedModel)
+	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
+
+	// Rewrite model in body
+	forwardBody := chatBody
+	if gjson.GetBytes(chatBody, "model").String() != upstreamModel {
+		forwardBody, err = sjson.SetBytes(chatBody, "model", upstreamModel)
+		if err != nil {
+			return nil, fmt.Errorf("rewrite model in body: %w", err)
+		}
+	}
+
+	// ── 3. Build upstream request ──
+	baseURL := account.GetOpenAIBaseURL()
+	validatedURL, err := s.validateUpstreamBaseURL(baseURL)
+	if err != nil {
+		return nil, fmt.Errorf("validate upstream base URL: %w", err)
+	}
+	targetURL := buildUpstreamChatCompletionsURL(validatedURL)
+
+	token, _, err := s.GetAccessToken(ctx, account)
+	if err != nil {
+		return nil, fmt.Errorf("get access token: %w", err)
+	}
+
+	upstreamReq, err := http.NewRequestWithContext(ctx, "POST", targetURL, bytes.NewReader(forwardBody))
+	if err != nil {
+		return nil, fmt.Errorf("create upstream request: %w", err)
+	}
+	upstreamReq.Header.Set("Content-Type", "application/json")
+	upstreamReq.Header.Set("Authorization", "Bearer "+token)
+	ua := c.GetHeader("User-Agent")
+	if !isAcceptedByThirdPartyUpstream(ua) {
+		ua = "claude-code/1.0.0"
+	}
+	upstreamReq.Header.Set("User-Agent", ua)
+
+	// ── 4. Send request ──
+	proxyURL := ""
+	if account.Proxy != nil {
+		proxyURL = account.Proxy.URL()
+	}
+	resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
+	if err != nil {
+		safeErr := sanitizeUpstreamErrorMessage(err.Error())
+		writeResponsesError(c, http.StatusBadGateway, "upstream_error", "Upstream request failed")
+		return nil, fmt.Errorf("upstream request failed: %s", safeErr)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	// ── 5. Handle upstream error ──
+	if resp.StatusCode >= 400 {
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+		_ = resp.Body.Close()
+		resp.Body = io.NopCloser(bytes.NewReader(respBody))
+
+		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
+		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
+
+		// Client errors (4xx except 429) are request-specific and should NOT
+		// trigger failover or mark the account as temporarily unschedulable.
+		// They indicate the request content is invalid, not that the account is unhealthy.
+		if resp.StatusCode < 500 && resp.StatusCode != 429 {
+			writeResponsesError(c, resp.StatusCode, "upstream_error", upstreamMsg)
+			return nil, fmt.Errorf("upstream returned %d: %s", resp.StatusCode, upstreamMsg)
+		}
+
+		if s.shouldFailoverOpenAIUpstreamResponse(resp.StatusCode, upstreamMsg, respBody) {
+			if s.rateLimitService != nil {
+				s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
+			}
+			return nil, &UpstreamFailoverError{
+				StatusCode:   resp.StatusCode,
+				ResponseBody: respBody,
+			}
+		}
+		writeResponsesError(c, resp.StatusCode, "upstream_error", upstreamMsg)
+		return nil, fmt.Errorf("upstream returned %d: %s", resp.StatusCode, upstreamMsg)
+	}
+
+	// ── 6. Convert response ──
+	if respReq.Stream {
+		return s.handleResponsesPassthroughStream(resp, c, originalModel, billingModel, upstreamModel, startTime)
+	}
+	return s.handleResponsesPassthroughNonStream(resp, c, originalModel, billingModel, upstreamModel, startTime)
+}
+
+// handleResponsesPassthroughNonStream converts a non-streaming Chat Completions response
+// to Responses API format and writes it to the client.
+func (s *OpenAIGatewayService) handleResponsesPassthroughNonStream(
+	resp *http.Response,
+	c *gin.Context,
+	originalModel string,
+	billingModel string,
+	upstreamModel string,
+	startTime time.Time,
+) (*OpenAIForwardResult, error) {
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
+	if err != nil {
+		writeResponsesError(c, http.StatusBadGateway, "api_error", "Failed to read upstream response")
+		return nil, fmt.Errorf("read upstream response: %w", err)
+	}
+
+	// Parse Chat Completions response
+	var chatResp struct {
+		ID      string `json:"id"`
+		Model   string `json:"model"`
+		Choices []struct {
+			Message struct {
+				Role             string `json:"role"`
+				Content          string `json:"content"`
+				ReasoningContent string `json:"reasoning_content"`
+			} `json:"message"`
+			FinishReason string `json:"finish_reason"`
+		} `json:"choices"`
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+			TotalTokens      int `json:"total_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(respBody, &chatResp); err != nil {
+		// If we can't parse, pass through as-is
+		c.Data(resp.StatusCode, "application/json", respBody)
+		return nil, nil
+	}
+
+	// Build Responses API response
+	content := chatResp.Choices[0].Message.Content
+	status := "completed"
+	if chatResp.Choices[0].FinishReason == "length" {
+		status = "incomplete"
+	}
+
+	outputs := []apicompat.ResponsesOutput{
+		{
+			Type:   "message",
+			ID:     "msg-" + chatResp.ID,
+			Role:   "assistant",
+			Status: "completed",
+			Content: []apicompat.ResponsesContentPart{
+				{Type: "output_text", Text: content},
+			},
+		},
+	}
+
+	// Add reasoning output if present
+	if chatResp.Choices[0].Message.ReasoningContent != "" {
+		reasoningOutput := apicompat.ResponsesOutput{
+			Type:            "reasoning",
+			ID:              "rs-" + chatResp.ID,
+			EncryptedContent: chatResp.Choices[0].Message.ReasoningContent,
+		}
+		outputs = append([]apicompat.ResponsesOutput{reasoningOutput}, outputs...)
+	}
+
+	responsesResp := apicompat.ResponsesResponse{
+		ID:     "resp-" + chatResp.ID,
+		Object: "response",
+		Model:  originalModel,
+		Status: status,
+		Output: outputs,
+		Usage: &apicompat.ResponsesUsage{
+			InputTokens:  chatResp.Usage.PromptTokens,
+			OutputTokens: chatResp.Usage.CompletionTokens,
+			TotalTokens:  chatResp.Usage.TotalTokens,
+		},
+	}
+
+	respJSON, err := json.Marshal(responsesResp)
+	if err != nil {
+		c.Data(resp.StatusCode, "application/json", respBody)
+		return nil, nil
+	}
+
+	c.Data(http.StatusOK, "application/json", respJSON)
+
+	return &OpenAIForwardResult{
+		Usage: OpenAIUsage{
+			InputTokens:  chatResp.Usage.PromptTokens,
+			OutputTokens: chatResp.Usage.CompletionTokens,
+		},
+		Model:         originalModel,
+		BillingModel:  billingModel,
+		UpstreamModel: upstreamModel,
+		Stream:        false,
+		Duration:      time.Since(startTime),
+	}, nil
+}
+
+// handleResponsesPassthroughStream converts a streaming Chat Completions response
+// to Responses API SSE format and writes it to the client.
+func (s *OpenAIGatewayService) handleResponsesPassthroughStream(
+	resp *http.Response,
+	c *gin.Context,
+	originalModel string,
+	billingModel string,
+	upstreamModel string,
+	startTime time.Time,
+) (*OpenAIForwardResult, error) {
+	if s.responseHeaderFilter != nil {
+		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+	}
+	c.Writer.Header().Set("Content-Type", "text/event-stream")
+	c.Writer.Header().Set("Cache-Control", "no-cache")
+	c.Writer.Header().Set("Connection", "keep-alive")
+	c.Writer.Header().Set("X-Accel-Buffering", "no")
+	c.Writer.WriteHeader(http.StatusOK)
+
+	respID := "resp-" + fmt.Sprintf("%d", time.Now().UnixNano())
+	msgID := "msg-" + fmt.Sprintf("%d", time.Now().UnixNano())
+	seqNum := 0
+
+	// Helper to write SSE event
+	writeSSE := func(event string, data any) {
+		seqNum++
+		payload, _ := json.Marshal(data)
+		fmt.Fprintf(c.Writer, "event: %s\n", event)
+		fmt.Fprintf(c.Writer, "data: %s\n\n", payload)
+		c.Writer.Flush()
+	}
+
+	// Send response.created
+	writeSSE("response.created", apicompat.ResponsesStreamEvent{
+		Type: "response.created",
+		Response: &apicompat.ResponsesResponse{
+			ID:     respID,
+			Object: "response",
+			Model:  originalModel,
+			Status: "in_progress",
+			Output: []apicompat.ResponsesOutput{},
+		},
+		SequenceNumber: seqNum,
+	})
+
+	// Send response.output_item.added
+	writeSSE("response.output_item.added", apicompat.ResponsesStreamEvent{
+		Type: "response.output_item.added",
+		Item: &apicompat.ResponsesOutput{
+			Type:    "message",
+			ID:      msgID,
+			Role:    "assistant",
+			Status:  "in_progress",
+			Content: []apicompat.ResponsesContentPart{},
+		},
+		OutputIndex:    0,
+		SequenceNumber: seqNum,
+	})
+
+	// Send response.content_part.added
+	writeSSE("response.content_part.added", apicompat.ResponsesStreamEvent{
+		Type:          "response.content_part.added",
+		ItemID:        msgID,
+		OutputIndex:   0,
+		ContentIndex:  0,
+		SequenceNumber: seqNum,
+	})
+
+	// Read Chat Completions SSE and convert to Responses API SSE
+	scanner := bufio.NewScanner(resp.Body)
+	maxLineSize := defaultMaxLineSize
+	if s.cfg != nil && s.cfg.Gateway.MaxLineSize > 0 {
+		maxLineSize = s.cfg.Gateway.MaxLineSize
+	}
+	scanner.Buffer(make([]byte, 0, 64*1024), maxLineSize)
+
+	var usage OpenAIUsage
+	var fullContent strings.Builder
+	var fullReasoning strings.Builder
+	firstTokenMs := int(time.Since(startTime).Milliseconds())
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data:") || line == "data: [DONE]" || line == "data:[DONE]" {
+			continue
+		}
+
+		// Handle both "data: {...}" (standard) and "data:{...}" (Kimi)
+		payload := strings.TrimPrefix(line, "data:")
+		payload = strings.TrimPrefix(payload, " ")
+		var chunk map[string]any
+		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+			continue
+		}
+
+		// Extract usage from the final chunk
+		if u, ok := chunk["usage"].(map[string]any); ok {
+			if v, ok := u["prompt_tokens"].(float64); ok {
+				usage.InputTokens = int(v)
+			}
+			if v, ok := u["completion_tokens"].(float64); ok {
+				usage.OutputTokens = int(v)
+			}
+		}
+
+		choices, _ := chunk["choices"].([]any)
+		if len(choices) == 0 {
+			continue
+		}
+		choice, _ := choices[0].(map[string]any)
+		if choice == nil {
+			continue
+		}
+		delta, _ := choice["delta"].(map[string]any)
+		if delta == nil {
+			continue
+		}
+
+		// Handle reasoning content delta
+		if rc, ok := delta["reasoning_content"].(string); ok && rc != "" {
+			fullReasoning.WriteString(rc)
+			// Responses API doesn't have a standard streaming event for reasoning,
+			// but some clients expect it. We skip reasoning deltas for now.
+		}
+
+		// Handle content delta
+		if content, ok := delta["content"].(string); ok && content != "" {
+			fullContent.WriteString(content)
+			writeSSE("response.output_text.delta", apicompat.ResponsesStreamEvent{
+				Type:           "response.output_text.delta",
+				ItemID:         msgID,
+				OutputIndex:    0,
+				ContentIndex:   0,
+				Delta:          content,
+				SequenceNumber: seqNum,
+			})
+		}
+
+		// Handle finish
+		if fr, ok := choice["finish_reason"].(string); ok && fr != "" && fr != "null" {
+			// No-op: we handle completion after the loop
+			_ = fr
+		}
+	}
+
+	// Send response.output_text.done
+	finalText := fullContent.String()
+	writeSSE("response.output_text.done", apicompat.ResponsesStreamEvent{
+		Type:           "response.output_text.done",
+		ItemID:         msgID,
+		OutputIndex:    0,
+		ContentIndex:   0,
+		Text:           finalText,
+		SequenceNumber: seqNum,
+	})
+
+	// Send response.content_part.done
+	writeSSE("response.content_part.done", apicompat.ResponsesStreamEvent{
+		Type:         "response.content_part.done",
+		ItemID:       msgID,
+		OutputIndex:  0,
+		ContentIndex: 0,
+		SequenceNumber: seqNum,
+	})
+
+	// Send response.output_item.done
+	writeSSE("response.output_item.done", apicompat.ResponsesStreamEvent{
+		Type: "response.output_item.done",
+		Item: &apicompat.ResponsesOutput{
+			Type:   "message",
+			ID:     msgID,
+			Role:   "assistant",
+			Status: "completed",
+			Content: []apicompat.ResponsesContentPart{
+				{Type: "output_text", Text: finalText},
+			},
+		},
+		OutputIndex:    0,
+		SequenceNumber: seqNum,
+	})
+
+	// Send response.completed
+	responsesUsage := &apicompat.ResponsesUsage{
+		InputTokens:  usage.InputTokens,
+		OutputTokens: usage.OutputTokens,
+		TotalTokens:  usage.InputTokens + usage.OutputTokens,
+	}
+	writeSSE("response.completed", apicompat.ResponsesStreamEvent{
+		Type: "response.completed",
+		Response: &apicompat.ResponsesResponse{
+			ID:     respID,
+			Object: "response",
+			Model:  originalModel,
+			Status: "completed",
+			Output: []apicompat.ResponsesOutput{
+				{
+					Type:   "message",
+					ID:     msgID,
+					Role:   "assistant",
+					Status: "completed",
+					Content: []apicompat.ResponsesContentPart{
+						{Type: "output_text", Text: finalText},
+					},
+				},
+			},
+			Usage: responsesUsage,
+		},
+		SequenceNumber: seqNum,
+	})
+
+	return &OpenAIForwardResult{
+		Usage:         usage,
+		Model:         originalModel,
+		BillingModel:  billingModel,
+		UpstreamModel: upstreamModel,
+		Stream:        true,
+		Duration:      time.Since(startTime),
+		FirstTokenMs:  &firstTokenMs,
+	}, nil
+}
+
+// rawMessageString creates a json.RawMessage from a Go string.
+func rawMessageString(s string) json.RawMessage {
+	b, _ := json.Marshal(s)
+	return json.RawMessage(b)
+}
+
+// convertResponsesInputToMessages converts a Responses API request's input field
+// into Chat Completions messages format.
+func convertResponsesInputToMessages(respReq apicompat.ResponsesRequest) ([]apicompat.ChatMessage, error) {
+	var messages []apicompat.ChatMessage
+
+	// Instructions become system message
+	if respReq.Instructions != "" {
+		messages = append(messages, apicompat.ChatMessage{
+			Role:    "system",
+			Content: rawMessageString(respReq.Instructions),
+		})
+	}
+
+	// Parse input — can be a string or an array of items
+	if len(respReq.Input) == 0 {
+		return messages, nil
+	}
+
+	// Try as string first
+	var inputStr string
+	if err := json.Unmarshal(respReq.Input, &inputStr); err == nil {
+		messages = append(messages, apicompat.ChatMessage{
+			Role:    "user",
+			Content: rawMessageString(inputStr),
+		})
+		return messages, nil
+	}
+
+	// Try as array of input items
+	var items []apicompat.ResponsesInputItem
+	if err := json.Unmarshal(respReq.Input, &items); err != nil {
+		return nil, fmt.Errorf("input must be a string or array: %w", err)
+	}
+
+	for _, item := range items {
+		switch {
+		case item.Type == "function_call":
+			// Skip function calls for basic passthrough
+			continue
+		case item.Type == "function_call_output":
+			// Skip function outputs for basic passthrough
+			continue
+		case item.Role == "user" || item.Role == "assistant" || item.Role == "system" || item.Role == "developer":
+			// Map "developer" to "system" — third-party providers (Kimi, DeepSeek, etc.)
+			// do not support the "developer" role and return errors like
+			// "Invalid request: tokenization failed".
+			role := item.Role
+			if role == "developer" {
+				role = "system"
+			}
+			msg := apicompat.ChatMessage{Role: role}
+			// Content can be a string or array of parts
+			var contentStr string
+			if err := json.Unmarshal(item.Content, &contentStr); err == nil {
+				msg.Content = rawMessageString(contentStr)
+			} else {
+				// Complex content — try extracting text from parts
+				var parts []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				}
+				if err := json.Unmarshal(item.Content, &parts); err == nil {
+					var texts []string
+					for _, p := range parts {
+						if p.Type == "input_text" || p.Type == "text" || p.Type == "output_text" {
+							texts = append(texts, p.Text)
+						}
+					}
+					if len(texts) > 0 {
+						msg.Content = rawMessageString(strings.Join(texts, "\n"))
+					}
+				} else {
+					msg.Content = item.Content
+				}
+			}
+			messages = append(messages, msg)
+		default:
+			// Unknown type — try as a user message with content
+			if item.Content != nil {
+				var contentStr string
+				if err := json.Unmarshal(item.Content, &contentStr); err == nil && contentStr != "" {
+					messages = append(messages, apicompat.ChatMessage{
+						Role:    "user",
+						Content: rawMessageString(contentStr),
+					})
+				}
+			}
+		}
+	}
+
+	return messages, nil
 }
