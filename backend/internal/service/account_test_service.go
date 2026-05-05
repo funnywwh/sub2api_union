@@ -480,6 +480,12 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 		if err != nil {
 			return s.sendErrorAndEnd(c, fmt.Sprintf("Invalid base URL: %s", err.Error()))
 		}
+
+		// Third-party OpenAI-compatible providers (DeepSeek, GLM, MiniMax, Kimi, etc.)
+		// only support /chat/completions, not the Responses API.
+		if !account.IsOpenAIOfficial() {
+			return s.testOpenAICompatPassthrough(c, ctx, account, authToken, testModelID, normalizedBaseURL)
+		}
 		apiURL = strings.TrimSuffix(normalizedBaseURL, "/") + "/responses"
 	} else {
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Unsupported account type: %s", account.Type))
@@ -1143,6 +1149,115 @@ func (s *AccountTestService) processClaudeStream(c *gin.Context, body io.Reader)
 }
 
 // processOpenAIStream processes the SSE stream from OpenAI Responses API
+// testOpenAICompatPassthrough tests a third-party OpenAI-compatible provider
+// (e.g., DeepSeek, GLM, MiniMax, Kimi) using the Chat Completions endpoint
+// instead of the Responses API which they don't support.
+func (s *AccountTestService) testOpenAICompatPassthrough(
+	c *gin.Context,
+	ctx context.Context,
+	account *Account,
+	authToken string,
+	testModelID string,
+	baseURL string,
+) error {
+	apiURL := buildUpstreamChatCompletionsURL(baseURL)
+
+	// Set SSE headers
+	c.Writer.Header().Set("Content-Type", "text/event-stream")
+	c.Writer.Header().Set("Cache-Control", "no-cache")
+	c.Writer.Header().Set("Connection", "keep-alive")
+	c.Writer.Header().Set("X-Accel-Buffering", "no")
+	c.Writer.Flush()
+
+	// Chat Completions format payload
+	payload := map[string]any{
+		"model": testModelID,
+		"messages": []map[string]any{
+			{"role": "user", "content": "hi"},
+		},
+		"max_tokens": 20,
+		"stream":    true,
+	}
+	payloadBytes, _ := json.Marshal(payload)
+
+	s.sendEvent(c, TestEvent{Type: "test_start", Model: testModelID})
+
+	req, err := http.NewRequestWithContext(ctx, "POST", apiURL, bytes.NewReader(payloadBytes))
+	if err != nil {
+		return s.sendErrorAndEnd(c, "Failed to create request")
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+authToken)
+	if ua := c.GetHeader("User-Agent"); ua != "" {
+		req.Header.Set("User-Agent", ua)
+	}
+
+	proxyURL := ""
+	if account.Proxy != nil {
+		proxyURL = account.Proxy.URL()
+	}
+	resp, err := s.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
+	if err != nil {
+		return s.sendErrorAndEnd(c, fmt.Sprintf("Request failed: %s", err.Error()))
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return s.sendErrorAndEnd(c, fmt.Sprintf("API returned %d: %s", resp.StatusCode, string(body)))
+	}
+
+	// Process Chat Completions SSE stream
+	reader := bufio.NewReader(resp.Body)
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			if err == io.EOF {
+				s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})
+				return nil
+			}
+			return s.sendErrorAndEnd(c, fmt.Sprintf("Stream read error: %s", err.Error()))
+		}
+
+		line = strings.TrimSpace(line)
+		if line == "" || !sseDataPrefix.MatchString(line) {
+			continue
+		}
+
+		jsonStr := sseDataPrefix.ReplaceAllString(line, "")
+		if jsonStr == "[DONE]" {
+			s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})
+			return nil
+		}
+
+		var data map[string]any
+		if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
+			continue
+		}
+
+		// Extract content delta from Chat Completions format
+		choices, ok := data["choices"].([]any)
+		if !ok || len(choices) == 0 {
+			continue
+		}
+		choice, ok := choices[0].(map[string]any)
+		if !ok {
+			continue
+		}
+		delta, ok := choice["delta"].(map[string]any)
+		if !ok {
+			continue
+		}
+		if content, ok := delta["content"].(string); ok && content != "" {
+			s.sendEvent(c, TestEvent{Type: "content", Text: content})
+		}
+		if finishReason, ok := choice["finish_reason"].(string); ok && finishReason != "" && finishReason != "null" {
+			s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})
+			return nil
+		}
+	}
+}
+
 func (s *AccountTestService) processOpenAIStream(c *gin.Context, body io.Reader) error {
 	reader := bufio.NewReader(body)
 	seenCompleted := false
