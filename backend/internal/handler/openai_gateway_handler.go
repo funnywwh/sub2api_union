@@ -335,7 +335,16 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		if channelMapping.Mapped {
 			forwardBody = h.gatewayService.ReplaceModelInBody(body, channelMapping.MappedModel)
 		}
-		result, err := h.gatewayService.Forward(c.Request.Context(), c, account, forwardBody)
+		// Passthrough: for non-OpenAI upstreams, convert Responses → Chat Completions
+		var forwardResult *service.OpenAIForwardResult
+		var forwardErr error
+		if account.Type == service.AccountTypeAPIKey && !account.IsOpenAIOfficial() {
+			forwardResult, forwardErr = h.gatewayService.ForwardResponsesPassthrough(c.Request.Context(), c, account, forwardBody, "")
+		} else {
+			forwardResult, forwardErr = h.gatewayService.Forward(c.Request.Context(), c, account, forwardBody)
+		}
+		result := forwardResult
+		err = forwardErr
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
 		if accountReleaseFunc != nil {
 			accountReleaseFunc()
