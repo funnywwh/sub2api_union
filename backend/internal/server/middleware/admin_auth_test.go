@@ -306,6 +306,10 @@ func (s *managedNodeAPIKeyRepoStub) AuthenticateActiveByHash(ctx context.Context
 	return s.authenticateActiveByHash(ctx, keyHash, ip, usedAt, audit)
 }
 
+func (s *managedNodeAPIKeyRepoStub) TouchUsageByID(ctx context.Context, keyID int64, ip string, usedAt time.Time, audit *service.ManagedNodeAPIKeyAudit) error {
+	panic("unexpected TouchUsageByID call")
+}
+
 func (s *managedNodeAPIKeyRepoStub) Revoke(ctx context.Context, keyID int64, revokedBy *int64, revokedAt time.Time, audit *service.ManagedNodeAPIKeyAudit) (*service.ManagedNodeAPIKey, error) {
 	panic("unexpected Revoke call")
 }
