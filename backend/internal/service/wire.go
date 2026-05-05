@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
@@ -37,6 +38,35 @@ func ProvideUpdateService(cache UpdateCache, githubClient GitHubReleaseClient, b
 // ProvideEmailQueueService creates EmailQueueService with default worker count
 func ProvideEmailQueueService(emailService *EmailService) *EmailQueueService {
 	return NewEmailQueueService(emailService, 3)
+}
+
+type managedNodeRedisTicketStore struct {
+	client *redis.Client
+}
+
+func ProvideManagedNodeTicketStore(redisClient *redis.Client) ManagedNodeTicketStore {
+	if redisClient == nil {
+		return nil
+	}
+	return &managedNodeRedisTicketStore{client: redisClient}
+}
+
+func (s *managedNodeRedisTicketStore) Set(ctx context.Context, key string, value []byte, ttl time.Duration) error {
+	if s == nil || s.client == nil {
+		return errManagedNodeTicketStoreUnavailable
+	}
+	return s.client.Set(ctx, key, value, ttl).Err()
+}
+
+func (s *managedNodeRedisTicketStore) GetDel(ctx context.Context, key string) (string, error) {
+	if s == nil || s.client == nil {
+		return "", errManagedNodeTicketStoreUnavailable
+	}
+	val, err := s.client.GetDel(ctx, key).Result()
+	if errors.Is(err, redis.Nil) {
+		return "", errManagedNodeTicketNotFound
+	}
+	return val, err
 }
 
 // ProvideOAuthRefreshAPI creates OAuthRefreshAPI with the default lock TTL.
@@ -444,6 +474,7 @@ var ProviderSet = wire.NewSet(
 	NewAccountTestService,
 	ProvideSettingService,
 	NewManagedNodeAPIKeyService,
+	ProvideManagedNodeTicketStore,
 	NewManagedNodeService,
 	NewDataManagementService,
 	ProvideBackupService,

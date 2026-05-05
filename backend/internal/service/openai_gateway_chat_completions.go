@@ -923,6 +923,7 @@ func (s *OpenAIGatewayService) handlePassthroughStreamingResponse(
 //   - base ends with /v1          → append /chat/completions
 //   - base ends with /chat/completions → return as-is
 //   - other                       → append /v1/chat/completions
+//
 // versionSuffixRe matches a trailing version path segment like /v1, /v4, /v2, etc.
 var versionSuffixRe = regexp.MustCompile(`/v\d+$`)
 
@@ -1156,8 +1157,8 @@ func (s *OpenAIGatewayService) handleResponsesPassthroughNonStream(
 	// Add reasoning output if present
 	if chatResp.Choices[0].Message.ReasoningContent != "" {
 		reasoningOutput := apicompat.ResponsesOutput{
-			Type:            "reasoning",
-			ID:              "rs-" + chatResp.ID,
+			Type:             "reasoning",
+			ID:               "rs-" + chatResp.ID,
 			EncryptedContent: chatResp.Choices[0].Message.ReasoningContent,
 		}
 		outputs = append([]apicompat.ResponsesOutput{reasoningOutput}, outputs...)
@@ -1258,10 +1259,10 @@ func (s *OpenAIGatewayService) handleResponsesPassthroughStream(
 
 	// Send response.content_part.added
 	writeSSE("response.content_part.added", apicompat.ResponsesStreamEvent{
-		Type:          "response.content_part.added",
-		ItemID:        msgID,
-		OutputIndex:   0,
-		ContentIndex:  0,
+		Type:           "response.content_part.added",
+		ItemID:         msgID,
+		OutputIndex:    0,
+		ContentIndex:   0,
 		SequenceNumber: seqNum,
 	})
 
@@ -1317,14 +1318,14 @@ func (s *OpenAIGatewayService) handleResponsesPassthroughStream(
 
 		// Handle reasoning content delta
 		if rc, ok := delta["reasoning_content"].(string); ok && rc != "" {
-			fullReasoning.WriteString(rc)
+			_, _ = fullReasoning.WriteString(rc)
 			// Responses API doesn't have a standard streaming event for reasoning,
 			// but some clients expect it. We skip reasoning deltas for now.
 		}
 
 		// Handle content delta
 		if content, ok := delta["content"].(string); ok && content != "" {
-			fullContent.WriteString(content)
+			_, _ = fullContent.WriteString(content)
 			writeSSE("response.output_text.delta", apicompat.ResponsesStreamEvent{
 				Type:           "response.output_text.delta",
 				ItemID:         msgID,
@@ -1355,10 +1356,10 @@ func (s *OpenAIGatewayService) handleResponsesPassthroughStream(
 
 	// Send response.content_part.done
 	writeSSE("response.content_part.done", apicompat.ResponsesStreamEvent{
-		Type:         "response.content_part.done",
-		ItemID:       msgID,
-		OutputIndex:  0,
-		ContentIndex: 0,
+		Type:           "response.content_part.done",
+		ItemID:         msgID,
+		OutputIndex:    0,
+		ContentIndex:   0,
 		SequenceNumber: seqNum,
 	})
 

@@ -81,7 +81,8 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	if err != nil {
 		return nil, err
 	}
-	managedNodeService := service.NewManagedNodeService(settingRepository, settingService, authService, userService, secretEncryptor, redisClient)
+	managedNodeTicketStore := service.ProvideManagedNodeTicketStore(redisClient)
+	managedNodeService := service.NewManagedNodeService(settingRepository, settingService, authService, userService, secretEncryptor, managedNodeTicketStore)
 	totpCache := repository.NewTotpCache(redisClient)
 	totpService := service.NewTotpService(userRepository, secretEncryptor, totpCache, settingService, emailService, emailQueueService)
 	authHandler := handler.NewAuthHandler(configConfig, authService, userService, managedNodeService, settingService, promoService, redeemService, totpService)

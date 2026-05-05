@@ -2,7 +2,6 @@ package admin
 
 import (
 	"context"
-	"strconv"
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
@@ -294,12 +293,4 @@ func (h *SettingHandler) CreateFederationSessionLink(c *gin.Context) {
 		return
 	}
 	response.Success(c, link)
-}
-
-func parsePositiveIntOrZero(raw string) int {
-	value, err := strconv.Atoi(strings.TrimSpace(raw))
-	if err != nil || value < 0 {
-		return 0
-	}
-	return value
 }

@@ -16,7 +16,6 @@ import (
 	"time"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
-	"github.com/redis/go-redis/v9"
 )
 
 const (
@@ -113,13 +112,23 @@ type federationTicketData struct {
 	ExpiresAt             time.Time `json:"expires_at"`
 }
 
+type ManagedNodeTicketStore interface {
+	Set(ctx context.Context, key string, value []byte, ttl time.Duration) error
+	GetDel(ctx context.Context, key string) (string, error)
+}
+
+var (
+	errManagedNodeTicketNotFound         = errors.New("managed node federation ticket not found")
+	errManagedNodeTicketStoreUnavailable = errors.New("managed node ticket store unavailable")
+)
+
 type ManagedNodeService struct {
 	settingRepo    SettingRepository
 	settingService *SettingService
 	authService    *AuthService
 	userService    *UserService
 	encryptor      SecretEncryptor
-	redisClient    *redis.Client
+	ticketStore    ManagedNodeTicketStore
 	httpClient     *http.Client
 }
 
@@ -129,7 +138,7 @@ func NewManagedNodeService(
 	authService *AuthService,
 	userService *UserService,
 	encryptor SecretEncryptor,
-	redisClient *redis.Client,
+	ticketStore ManagedNodeTicketStore,
 ) *ManagedNodeService {
 	return &ManagedNodeService{
 		settingRepo:    settingRepo,
@@ -137,7 +146,7 @@ func NewManagedNodeService(
 		authService:    authService,
 		userService:    userService,
 		encryptor:      encryptor,
-		redisClient:    redisClient,
+		ticketStore:    ticketStore,
 		httpClient: &http.Client{
 			Timeout: defaultManagedNodeHTTPTimeout,
 		},
@@ -333,7 +342,7 @@ func (s *ManagedNodeService) RequestRemoteJumpLink(ctx context.Context, node *Ma
 }
 
 func (s *ManagedNodeService) CreateLocalJumpLink(ctx context.Context, requestBaseURL string, redirectPath string) (*ManagedNodeJumpLinkResponse, error) {
-	if s == nil || s.authService == nil || s.userService == nil || s.redisClient == nil {
+	if s == nil || s.authService == nil || s.userService == nil || s.ticketStore == nil {
 		return nil, infraerrors.InternalServer("MANAGED_NODE_FEDERATION_UNAVAILABLE", "managed node federation service is unavailable")
 	}
 
@@ -388,7 +397,7 @@ func (s *ManagedNodeService) CreateLocalJumpLink(ctx context.Context, requestBas
 }
 
 func (s *ManagedNodeService) ExchangeFederationTicket(ctx context.Context, ticket string) (string, int, string, error) {
-	if s == nil || s.redisClient == nil || s.authService == nil || s.userService == nil {
+	if s == nil || s.ticketStore == nil || s.authService == nil || s.userService == nil {
 		return "", 0, "", infraerrors.InternalServer("FEDERATION_UNAVAILABLE", "managed node federation is unavailable")
 	}
 	data, err := s.consumeFederationTicket(ctx, ticket)
@@ -580,7 +589,7 @@ func (s *ManagedNodeService) issueFederationTicket(ctx context.Context, data *fe
 	if ttl <= 0 {
 		ttl = defaultFederationTicketTTL
 	}
-	if err := s.redisClient.Set(ctx, federationTicketKey(ticket), payload, ttl).Err(); err != nil {
+	if err := s.ticketStore.Set(ctx, federationTicketKey(ticket), payload, ttl); err != nil {
 		return "", 0, err
 	}
 	return ticket, int(ttl.Seconds()), nil
@@ -591,9 +600,9 @@ func (s *ManagedNodeService) consumeFederationTicket(ctx context.Context, ticket
 	if ticket == "" {
 		return nil, infraerrors.BadRequest("FEDERATION_TICKET_REQUIRED", "federation ticket is required")
 	}
-	val, err := s.redisClient.GetDel(ctx, federationTicketKey(ticket)).Result()
+	val, err := s.ticketStore.GetDel(ctx, federationTicketKey(ticket))
 	if err != nil {
-		if errors.Is(err, redis.Nil) {
+		if errors.Is(err, errManagedNodeTicketNotFound) {
 			return nil, infraerrors.Unauthorized("FEDERATION_TICKET_INVALID", "federation ticket is invalid or expired")
 		}
 		return nil, infraerrors.InternalServer("FEDERATION_TICKET_LOOKUP_FAILED", "failed to validate federation ticket").WithCause(err)
