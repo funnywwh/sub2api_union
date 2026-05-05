@@ -1188,9 +1188,9 @@ func (s *AccountTestService) testOpenAICompatPassthrough(
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+authToken)
-	if ua := c.GetHeader("User-Agent"); ua != "" {
-		req.Header.Set("User-Agent", ua)
-	}
+	// Always use coding-agent UA for third-party upstreams — browser UA from
+	// the admin dashboard would be rejected by providers like Kimi Coding.
+	req.Header.Set("User-Agent", "claude-code/1.0.0")
 
 	proxyURL := ""
 	if account.Proxy != nil {
@@ -1248,8 +1248,11 @@ func (s *AccountTestService) testOpenAICompatPassthrough(
 		if !ok {
 			continue
 		}
+		// Extract content or reasoning_content (e.g., Kimi uses reasoning_content)
 		if content, ok := delta["content"].(string); ok && content != "" {
 			s.sendEvent(c, TestEvent{Type: "content", Text: content})
+		} else if reasoning, ok := delta["reasoning_content"].(string); ok && reasoning != "" {
+			s.sendEvent(c, TestEvent{Type: "content", Text: reasoning})
 		}
 		if finishReason, ok := choice["finish_reason"].(string); ok && finishReason != "" && finishReason != "null" {
 			s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})
