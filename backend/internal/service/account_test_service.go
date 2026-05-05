@@ -50,9 +50,10 @@ type TestEvent struct {
 }
 
 const (
-	defaultGeminiTextTestPrompt  = "hi"
-	defaultGeminiImageTestPrompt = "Generate a cute orange cat astronaut sticker on a clean pastel background."
-	defaultOpenAIImageTestPrompt = "Generate a cute orange cat astronaut sticker on a clean pastel background."
+	defaultGeminiTextTestPrompt   = "hi"
+	defaultGeminiImageTestPrompt  = "Generate a cute orange cat astronaut sticker on a clean pastel background."
+	defaultOpenAIImageTestPrompt  = "Generate a cute orange cat astronaut sticker on a clean pastel background."
+	openAICompatTextTestMaxTokens = 128
 )
 
 // isOpenAIImageModel checks if the model is an OpenAI image generation model (e.g. gpt-image-2).
@@ -1175,8 +1176,8 @@ func (s *AccountTestService) testOpenAICompatPassthrough(
 		"messages": []map[string]any{
 			{"role": "user", "content": "hi"},
 		},
-		"max_tokens": 20,
-		"stream":    true,
+		"max_tokens": openAICompatTextTestMaxTokens,
+		"stream":     true,
 	}
 	payloadBytes, _ := json.Marshal(payload)
 
@@ -1248,11 +1249,11 @@ func (s *AccountTestService) testOpenAICompatPassthrough(
 		if !ok {
 			continue
 		}
-		// Extract content or reasoning_content (e.g., Kimi uses reasoning_content)
+		// Only surface final answer text. Reasoning models such as Kimi may
+		// stream reasoning_content before content; showing it makes the account
+		// test look like it returned "thinking" instead of the visible reply.
 		if content, ok := delta["content"].(string); ok && content != "" {
 			s.sendEvent(c, TestEvent{Type: "content", Text: content})
-		} else if reasoning, ok := delta["reasoning_content"].(string); ok && reasoning != "" {
-			s.sendEvent(c, TestEvent{Type: "content", Text: reasoning})
 		}
 		if finishReason, ok := choice["finish_reason"].(string); ok && finishReason != "" && finishReason != "null" {
 			s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})

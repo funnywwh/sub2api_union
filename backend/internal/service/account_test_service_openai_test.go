@@ -4,6 +4,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -148,6 +149,46 @@ func TestAccountTestService_OpenAIStreamEOFBeforeCompletedFails(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, recorder.Body.String(), "response.completed")
 	require.NotContains(t, recorder.Body.String(), `"success":true`)
+}
+
+func TestAccountTestService_OpenAICompatSkipsReasoningContent(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, recorder := newTestContext()
+
+	resp := newJSONResponse(http.StatusOK, `data: {"choices":[{"delta":{"reasoning_content":"思考中"},"finish_reason":null}]}
+
+data: {"choices":[{"delta":{"content":"OK"},"finish_reason":null}]}
+
+data: {"choices":[{"delta":{},"finish_reason":"stop"}]}
+
+`)
+
+	upstream := &queuedHTTPUpstream{responses: []*http.Response{resp}}
+	svc := &AccountTestService{httpUpstream: upstream}
+	account := &Account{
+		ID:          91,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+	}
+
+	err := svc.testOpenAICompatPassthrough(c, context.Background(), account, "sk-test", "kimi-latest", "https://api.kimi.com")
+	require.NoError(t, err)
+
+	body := recorder.Body.String()
+	require.NotContains(t, body, "思考中")
+	require.Contains(t, body, `"text":"OK"`)
+	require.Contains(t, body, `"success":true`)
+
+	require.Len(t, upstream.requests, 1)
+	require.Equal(t, "claude-code/1.0.0", upstream.requests[0].Header.Get("User-Agent"))
+
+	requestBody, err := io.ReadAll(upstream.requests[0].Body)
+	require.NoError(t, err)
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(requestBody, &payload))
+	require.Equal(t, float64(openAICompatTextTestMaxTokens), payload["max_tokens"])
 }
 
 func TestAccountTestService_OpenAI429PersistsSnapshotAndRateLimitState(t *testing.T) {
