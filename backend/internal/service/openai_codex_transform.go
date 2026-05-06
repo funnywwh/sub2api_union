@@ -451,36 +451,52 @@ func normalizeCodexModel(model string) string {
 	}
 
 	normalized := strings.ToLower(modelID)
+	compact := compactOpenAIModelAlias(normalized)
 
-	if strings.Contains(normalized, "gpt-5.5") || strings.Contains(normalized, "gpt 5.5") {
+	if strings.Contains(normalized, "gpt-5.5") || strings.Contains(normalized, "gpt 5.5") || strings.Contains(compact, "gpt5.5") {
 		return "gpt-5.5"
 	}
-	if strings.Contains(normalized, "gpt-5.4-mini") || strings.Contains(normalized, "gpt 5.4 mini") {
+	if strings.Contains(normalized, "gpt-5.4-mini") || strings.Contains(normalized, "gpt 5.4 mini") || strings.Contains(compact, "gpt5.4mini") {
 		return "gpt-5.4-mini"
 	}
-	if strings.Contains(normalized, "gpt-5.4") || strings.Contains(normalized, "gpt 5.4") {
+	if strings.Contains(normalized, "gpt-5.4") || strings.Contains(normalized, "gpt 5.4") || strings.Contains(compact, "gpt5.4") {
 		return "gpt-5.4"
 	}
-	if strings.Contains(normalized, "gpt-5.2") || strings.Contains(normalized, "gpt 5.2") {
+	if strings.Contains(normalized, "gpt-5.2") || strings.Contains(normalized, "gpt 5.2") || strings.Contains(compact, "gpt5.2") {
 		return "gpt-5.2"
 	}
-	if strings.Contains(normalized, "gpt-5.3-codex-spark") || strings.Contains(normalized, "gpt 5.3 codex spark") {
+	if strings.Contains(normalized, "gpt-5.3-codex-spark") || strings.Contains(normalized, "gpt 5.3 codex spark") || strings.Contains(compact, "gpt5.3codexspark") {
 		return "gpt-5.3-codex-spark"
 	}
-	if strings.Contains(normalized, "gpt-5.3-codex") || strings.Contains(normalized, "gpt 5.3 codex") {
+	if strings.Contains(normalized, "gpt-5.3-codex") || strings.Contains(normalized, "gpt 5.3 codex") || strings.Contains(compact, "gpt5.3codex") {
 		return "gpt-5.3-codex"
 	}
-	if strings.Contains(normalized, "gpt-5.3") || strings.Contains(normalized, "gpt 5.3") {
+	if strings.Contains(normalized, "gpt-5.3") || strings.Contains(normalized, "gpt 5.3") || strings.Contains(compact, "gpt5.3") {
 		return "gpt-5.3-codex"
 	}
 	if strings.Contains(normalized, "codex") {
 		return "gpt-5.3-codex"
 	}
-	if strings.Contains(normalized, "gpt-5") || strings.Contains(normalized, "gpt 5") {
+	if strings.Contains(normalized, "gpt-5") || strings.Contains(normalized, "gpt 5") || strings.Contains(compact, "gpt5") {
 		return "gpt-5.4"
 	}
 
 	return "gpt-5.4"
+}
+
+func compactOpenAIModelAlias(model string) string {
+	model = strings.ToLower(strings.TrimSpace(model))
+	replacer := strings.NewReplacer("-", "", " ", "", "_", "")
+	return replacer.Replace(model)
+}
+
+func isOpenAIGPT5OrCodexAlias(model string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(model))
+	compact := compactOpenAIModelAlias(normalized)
+	return strings.Contains(normalized, "gpt-5") ||
+		strings.Contains(normalized, "gpt 5") ||
+		strings.Contains(compact, "gpt5") ||
+		strings.Contains(normalized, "codex")
 }
 
 func isCodexSparkModel(model string) bool {

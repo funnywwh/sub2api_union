@@ -27,6 +27,26 @@ func forwardResultBillingModel(requestedModel, upstreamModel string) string {
 	return strings.TrimSpace(upstreamModel)
 }
 
+func resolveUsageBillingModel(defaultBillingModel, upstreamModel, billingModelSource, originalModel, channelMappedModel string) string {
+	billingModel := strings.TrimSpace(defaultBillingModel)
+	switch billingModelSource {
+	case BillingModelSourceUpstream:
+		if trimmed := strings.TrimSpace(upstreamModel); trimmed != "" {
+			return trimmed
+		}
+	case BillingModelSourceRequested:
+		if trimmed := strings.TrimSpace(originalModel); trimmed != "" {
+			return trimmed
+		}
+	case BillingModelSourceChannelMapped:
+		trimmed := strings.TrimSpace(channelMappedModel)
+		if trimmed != "" && trimmed != strings.TrimSpace(originalModel) {
+			return trimmed
+		}
+	}
+	return billingModel
+}
+
 func optionalInt64Ptr(v int64) *int64 {
 	if v == 0 {
 		return nil

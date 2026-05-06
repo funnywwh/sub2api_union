@@ -114,6 +114,32 @@ func TestGetModelPricing_Gpt55UsesStaticFallbackWhenRemoteMissing(t *testing.T) 
 	require.Zero(t, got.LongContextInputTokenThreshold)
 }
 
+func TestGetModelPricing_OpenAIGPT5CompactAliasesUseStaticFallback(t *testing.T) {
+	svc := &PricingService{
+		pricingData: map[string]*LiteLLMModelPricing{
+			"gpt-5.1-codex": {InputCostPerToken: 1.25e-6},
+		},
+	}
+
+	tests := []struct {
+		model         string
+		expectedInput float64
+	}{
+		{model: "GPT5.4", expectedInput: 2.5e-6},
+		{model: "gpt5.4", expectedInput: 2.5e-6},
+		{model: "GPT5.5", expectedInput: 5e-6},
+		{model: "gpt5.5", expectedInput: 5e-6},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			got := svc.GetModelPricing(tt.model)
+			require.NotNil(t, got)
+			require.InDelta(t, tt.expectedInput, got.InputCostPerToken, 1e-12)
+		})
+	}
+}
+
 func TestGetModelPricing_Gpt54MiniUsesDedicatedStaticFallbackWhenRemoteMissing(t *testing.T) {
 	svc := &PricingService{
 		pricingData: map[string]*LiteLLMModelPricing{

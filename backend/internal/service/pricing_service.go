@@ -578,6 +578,9 @@ func (s *PricingService) GetModelPricing(modelName string) *LiteLLMModelPricing 
 	}
 
 	// 5. OpenAI 模型回退策略
+	if isOpenAIGPT5OrCodexAlias(lookupCandidates[0]) {
+		return s.matchOpenAIModel(normalizeCodexModel(lookupCandidates[0]))
+	}
 	if strings.HasPrefix(lookupCandidates[0], "gpt-") {
 		return s.matchOpenAIModel(lookupCandidates[0])
 	}
