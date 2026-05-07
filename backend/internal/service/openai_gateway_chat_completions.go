@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
@@ -959,6 +960,443 @@ func buildUpstreamChatCompletionsURL(base string) string {
 	return normalized + "/v1/chat/completions"
 }
 
+func convertResponsesToolsToChatTools(tools []apicompat.ResponsesTool) []apicompat.ChatTool {
+	if len(tools) == 0 {
+		return nil
+	}
+	out := make([]apicompat.ChatTool, 0, len(tools))
+	for _, tool := range tools {
+		if strings.TrimSpace(tool.Type) != "function" || strings.TrimSpace(tool.Name) == "" {
+			continue
+		}
+		function := &apicompat.ChatFunction{
+			Name:        tool.Name,
+			Description: tool.Description,
+			Parameters:  tool.Parameters,
+			Strict:      tool.Strict,
+		}
+		out = append(out, apicompat.ChatTool{Type: "function", Function: function})
+	}
+	return out
+}
+
+func convertResponsesToolChoiceToChat(raw json.RawMessage) json.RawMessage {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return raw
+	}
+	var choice map[string]any
+	if err := json.Unmarshal(trimmed, &choice); err != nil {
+		return raw
+	}
+	if strings.TrimSpace(firstNonEmptyString(choice["type"])) != "function" {
+		return raw
+	}
+	if function, ok := choice["function"].(map[string]any); ok && strings.TrimSpace(firstNonEmptyString(function["name"])) != "" {
+		return raw
+	}
+	name := strings.TrimSpace(firstNonEmptyString(choice["name"]))
+	if name == "" {
+		return raw
+	}
+	converted, err := json.Marshal(map[string]any{
+		"type": "function",
+		"function": map[string]any{
+			"name": name,
+		},
+	})
+	if err != nil {
+		return raw
+	}
+	return converted
+}
+
+func convertChatToolCallsToResponsesOutputs(toolCalls []apicompat.ChatToolCall) []apicompat.ResponsesOutput {
+	if len(toolCalls) == 0 {
+		return nil
+	}
+	out := make([]apicompat.ResponsesOutput, 0, len(toolCalls))
+	for i, toolCall := range toolCalls {
+		name := strings.TrimSpace(toolCall.Function.Name)
+		if name == "" {
+			continue
+		}
+		callID := strings.TrimSpace(toolCall.ID)
+		if callID == "" {
+			callID = fmt.Sprintf("call_%d", i)
+		}
+		out = append(out, apicompat.ResponsesOutput{
+			Type:      "function_call",
+			CallID:    callID,
+			Name:      name,
+			Arguments: normalizeToolCallArguments(toolCall.Function.Arguments),
+		})
+	}
+	return out
+}
+
+func normalizeToolCallArguments(arguments string) string {
+	if strings.TrimSpace(arguments) == "" {
+		return "{}"
+	}
+	return arguments
+}
+
+const openAIResponsesPassthroughToolContextTTL = 30 * time.Minute
+
+type openAIResponsesPassthroughToolContextEntry struct {
+	messages  []apicompat.ChatMessage
+	expiresAt time.Time
+}
+
+type openAIResponsesPassthroughToolContextStore struct {
+	mu      sync.Mutex
+	entries map[string]openAIResponsesPassthroughToolContextEntry
+}
+
+var openAIResponsesPassthroughToolContexts = &openAIResponsesPassthroughToolContextStore{
+	entries: make(map[string]openAIResponsesPassthroughToolContextEntry),
+}
+
+func storeOpenAIResponsesPassthroughToolContext(responseID string, outputs []apicompat.ResponsesOutput) {
+	openAIResponsesPassthroughToolContexts.Store(responseID, outputs)
+}
+
+func loadOpenAIResponsesPassthroughToolContext(responseID string) []apicompat.ChatMessage {
+	return openAIResponsesPassthroughToolContexts.Load(responseID)
+}
+
+func (s *openAIResponsesPassthroughToolContextStore) Store(responseID string, outputs []apicompat.ResponsesOutput) {
+	responseID = strings.TrimSpace(responseID)
+	if responseID == "" {
+		return
+	}
+	messages := chatMessagesForResponsesFunctionCalls(outputs)
+	if len(messages) == 0 {
+		return
+	}
+	now := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.entries == nil {
+		s.entries = make(map[string]openAIResponsesPassthroughToolContextEntry)
+	}
+	for id, entry := range s.entries {
+		if now.After(entry.expiresAt) {
+			delete(s.entries, id)
+		}
+	}
+	s.entries[responseID] = openAIResponsesPassthroughToolContextEntry{
+		messages:  cloneChatMessages(messages),
+		expiresAt: now.Add(openAIResponsesPassthroughToolContextTTL),
+	}
+}
+
+func (s *openAIResponsesPassthroughToolContextStore) Load(responseID string) []apicompat.ChatMessage {
+	responseID = strings.TrimSpace(responseID)
+	if responseID == "" {
+		return nil
+	}
+	now := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entry, ok := s.entries[responseID]
+	if !ok {
+		return nil
+	}
+	if now.After(entry.expiresAt) {
+		delete(s.entries, responseID)
+		return nil
+	}
+	return cloneChatMessages(entry.messages)
+}
+
+func chatMessagesForResponsesFunctionCalls(outputs []apicompat.ResponsesOutput) []apicompat.ChatMessage {
+	var toolCalls []apicompat.ChatToolCall
+	for i, output := range outputs {
+		if output.Type != "function_call" || strings.TrimSpace(output.Name) == "" {
+			continue
+		}
+		callID := strings.TrimSpace(output.CallID)
+		if callID == "" {
+			callID = fmt.Sprintf("call_%d", i)
+		}
+		toolCalls = append(toolCalls, apicompat.ChatToolCall{
+			ID:   callID,
+			Type: "function",
+			Function: apicompat.ChatFunctionCall{
+				Name:      output.Name,
+				Arguments: normalizeToolCallArguments(output.Arguments),
+			},
+		})
+	}
+	if len(toolCalls) == 0 {
+		return nil
+	}
+	return []apicompat.ChatMessage{{Role: "assistant", ToolCalls: toolCalls}}
+}
+
+func cloneChatMessages(messages []apicompat.ChatMessage) []apicompat.ChatMessage {
+	if len(messages) == 0 {
+		return nil
+	}
+	out := make([]apicompat.ChatMessage, len(messages))
+	copy(out, messages)
+	for i := range out {
+		if len(messages[i].ToolCalls) > 0 {
+			out[i].ToolCalls = append([]apicompat.ChatToolCall(nil), messages[i].ToolCalls...)
+		}
+		if len(messages[i].Content) > 0 {
+			out[i].Content = append(json.RawMessage(nil), messages[i].Content...)
+		}
+	}
+	return out
+}
+
+func chatMessagesNeedPassthroughToolContext(messages []apicompat.ChatMessage) bool {
+	hasToolOutput := false
+	for _, message := range messages {
+		if message.Role == "assistant" && len(message.ToolCalls) > 0 {
+			return false
+		}
+		if message.Role == "tool" || message.Role == "function" {
+			hasToolOutput = true
+		}
+	}
+	return hasToolOutput
+}
+
+type chatToolCallResponseStreamState struct {
+	calls              []chatToolCallResponseStreamCall
+	indexToPos         map[int]int
+	nextOutputIndex    int
+	messageOutputIndex int
+}
+
+type chatToolCallResponseStreamCall struct {
+	OutputIndex         int
+	CallID              string
+	Name                string
+	Arguments           string
+	EmittedArgumentsLen int
+	Added               bool
+}
+
+func newChatToolCallResponseStreamState() *chatToolCallResponseStreamState {
+	return &chatToolCallResponseStreamState{
+		indexToPos:         make(map[int]int),
+		messageOutputIndex: -1,
+	}
+}
+
+func (s *chatToolCallResponseStreamState) hasToolCalls() bool {
+	if s == nil {
+		return false
+	}
+	for i := range s.calls {
+		if s.calls[i].Name != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *chatToolCallResponseStreamState) reserveMessageOutputIndex() int {
+	if s == nil {
+		return 0
+	}
+	if s.messageOutputIndex >= 0 {
+		return s.messageOutputIndex
+	}
+	s.messageOutputIndex = s.nextOutputIndex
+	s.nextOutputIndex++
+	return s.messageOutputIndex
+}
+
+func (s *chatToolCallResponseStreamState) processRawToolCallDeltas(rawToolCalls []any) []apicompat.ResponsesStreamEvent {
+	if s == nil || len(rawToolCalls) == 0 {
+		return nil
+	}
+	var events []apicompat.ResponsesStreamEvent
+	for _, rawToolCall := range rawToolCalls {
+		toolCall, ok := rawToolCall.(map[string]any)
+		if !ok {
+			continue
+		}
+		position := s.resolveToolCallPosition(toolCall)
+		call := &s.calls[position]
+		if id := strings.TrimSpace(firstNonEmptyString(toolCall["id"])); id != "" {
+			call.CallID = id
+		}
+		if typ := strings.TrimSpace(firstNonEmptyString(toolCall["type"])); typ != "" && typ != "function" {
+			continue
+		}
+		function, _ := toolCall["function"].(map[string]any)
+		if name := strings.TrimSpace(firstNonEmptyString(function["name"])); name != "" {
+			call.Name = name
+		}
+		if delta := firstNonEmptyString(function["arguments"]); delta != "" {
+			call.Arguments += delta
+		}
+		if call.CallID == "" {
+			call.CallID = fmt.Sprintf("call_%d", call.OutputIndex)
+		}
+		if !call.Added && call.Name != "" {
+			call.Added = true
+			events = append(events, apicompat.ResponsesStreamEvent{
+				Type:        "response.output_item.added",
+				OutputIndex: call.OutputIndex,
+				Item: &apicompat.ResponsesOutput{
+					Type:   "function_call",
+					CallID: call.CallID,
+					Name:   call.Name,
+				},
+			})
+		}
+		if call.Added && call.EmittedArgumentsLen < len(call.Arguments) {
+			delta := call.Arguments[call.EmittedArgumentsLen:]
+			call.EmittedArgumentsLen = len(call.Arguments)
+			events = append(events, apicompat.ResponsesStreamEvent{
+				Type:        "response.function_call_arguments.delta",
+				OutputIndex: call.OutputIndex,
+				ItemID:      call.CallID,
+				CallID:      call.CallID,
+				Name:        call.Name,
+				Delta:       delta,
+			})
+		}
+	}
+	return events
+}
+
+func (s *chatToolCallResponseStreamState) resolveToolCallPosition(toolCall map[string]any) int {
+	idx, ok := numericToolCallIndex(toolCall["index"])
+	if ok {
+		if pos, exists := s.indexToPos[idx]; exists {
+			return pos
+		}
+		pos := len(s.calls)
+		s.indexToPos[idx] = pos
+		s.calls = append(s.calls, chatToolCallResponseStreamCall{OutputIndex: s.allocateOutputIndex()})
+		return pos
+	}
+	pos := len(s.calls) - 1
+	if pos >= 0 {
+		last := &s.calls[pos]
+		if last.Name == "" || !last.Added {
+			return pos
+		}
+	}
+	pos = len(s.calls)
+	s.calls = append(s.calls, chatToolCallResponseStreamCall{OutputIndex: s.allocateOutputIndex()})
+	return pos
+}
+
+func (s *chatToolCallResponseStreamState) allocateOutputIndex() int {
+	idx := s.nextOutputIndex
+	s.nextOutputIndex++
+	return idx
+}
+
+func numericToolCallIndex(value any) (int, bool) {
+	switch v := value.(type) {
+	case float64:
+		return int(v), true
+	case int:
+		return v, true
+	case json.Number:
+		i, err := v.Int64()
+		return int(i), err == nil
+	default:
+		return 0, false
+	}
+}
+
+func (s *chatToolCallResponseStreamState) doneEvents() []apicompat.ResponsesStreamEvent {
+	if s == nil || len(s.calls) == 0 {
+		return nil
+	}
+	events := make([]apicompat.ResponsesStreamEvent, 0, len(s.calls)*2)
+	for i := range s.calls {
+		call := &s.calls[i]
+		if call.Name == "" {
+			continue
+		}
+		if call.CallID == "" {
+			call.CallID = fmt.Sprintf("call_%d", call.OutputIndex)
+		}
+		arguments := normalizeToolCallArguments(call.Arguments)
+		events = append(events,
+			apicompat.ResponsesStreamEvent{
+				Type:        "response.function_call_arguments.done",
+				OutputIndex: call.OutputIndex,
+				ItemID:      call.CallID,
+				CallID:      call.CallID,
+				Name:        call.Name,
+				Arguments:   arguments,
+			},
+			apicompat.ResponsesStreamEvent{
+				Type:        "response.output_item.done",
+				OutputIndex: call.OutputIndex,
+				Item: &apicompat.ResponsesOutput{
+					Type:      "function_call",
+					CallID:    call.CallID,
+					Name:      call.Name,
+					Arguments: arguments,
+				},
+			},
+		)
+	}
+	return events
+}
+
+func (s *chatToolCallResponseStreamState) outputsWithMessage(includeMessage bool, message apicompat.ResponsesOutput) []apicompat.ResponsesOutput {
+	if s == nil {
+		if includeMessage {
+			return []apicompat.ResponsesOutput{message}
+		}
+		return nil
+	}
+	byIndex := make([]*apicompat.ResponsesOutput, s.nextOutputIndex)
+	if includeMessage {
+		idx := s.messageOutputIndex
+		if idx < 0 {
+			idx = s.reserveMessageOutputIndex()
+			if idx >= len(byIndex) {
+				byIndex = append(byIndex, nil)
+			}
+		}
+		msg := message
+		byIndex[idx] = &msg
+	}
+	for i := range s.calls {
+		call := &s.calls[i]
+		if call.Name == "" {
+			continue
+		}
+		if call.CallID == "" {
+			call.CallID = fmt.Sprintf("call_%d", call.OutputIndex)
+		}
+		out := apicompat.ResponsesOutput{
+			Type:      "function_call",
+			CallID:    call.CallID,
+			Name:      call.Name,
+			Arguments: normalizeToolCallArguments(call.Arguments),
+		}
+		for call.OutputIndex >= len(byIndex) {
+			byIndex = append(byIndex, nil)
+		}
+		byIndex[call.OutputIndex] = &out
+	}
+	out := make([]apicompat.ResponsesOutput, 0, len(byIndex))
+	for _, item := range byIndex {
+		if item != nil {
+			out = append(out, *item)
+		}
+	}
+	return out
+}
+
 // ForwardResponsesPassthrough converts a Responses API request to Chat Completions
 // format, forwards it to a third-party OpenAI-compatible upstream (e.g., Kimi),
 // then converts the Chat Completions response back to Responses API format.
@@ -983,11 +1421,23 @@ func (s *OpenAIGatewayService) ForwardResponsesPassthrough(
 	if err != nil {
 		return nil, fmt.Errorf("convert responses to chat completions: %w", err)
 	}
+	previousResponseID := strings.TrimSpace(gjson.GetBytes(body, "previous_response_id").String())
+	if previousResponseID != "" && chatMessagesNeedPassthroughToolContext(messages) {
+		if contextMessages := loadOpenAIResponsesPassthroughToolContext(previousResponseID); len(contextMessages) > 0 {
+			messages = append(contextMessages, messages...)
+		}
+	}
 
 	chatReq := apicompat.ChatCompletionsRequest{
 		Model:    respReq.Model,
 		Messages: messages,
 		Stream:   respReq.Stream,
+	}
+	if len(respReq.Tools) > 0 {
+		chatReq.Tools = convertResponsesToolsToChatTools(respReq.Tools)
+	}
+	if len(respReq.ToolChoice) > 0 {
+		chatReq.ToolChoice = convertResponsesToolChoiceToChat(respReq.ToolChoice)
 	}
 	if respReq.MaxOutputTokens != nil {
 		chatReq.MaxCompletionTokens = respReq.MaxOutputTokens
@@ -1117,9 +1567,11 @@ func (s *OpenAIGatewayService) handleResponsesPassthroughNonStream(
 		Model   string `json:"model"`
 		Choices []struct {
 			Message struct {
-				Role             string `json:"role"`
-				Content          string `json:"content"`
-				ReasoningContent string `json:"reasoning_content"`
+				Role             string                      `json:"role"`
+				Content          string                      `json:"content"`
+				ReasoningContent string                      `json:"reasoning_content"`
+				ToolCalls        []apicompat.ChatToolCall    `json:"tool_calls"`
+				FunctionCall     *apicompat.ChatFunctionCall `json:"function_call"`
 			} `json:"message"`
 			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
@@ -1134,16 +1586,22 @@ func (s *OpenAIGatewayService) handleResponsesPassthroughNonStream(
 		c.Data(resp.StatusCode, "application/json", respBody)
 		return nil, nil
 	}
+	if len(chatResp.Choices) == 0 {
+		c.Data(resp.StatusCode, "application/json", respBody)
+		return nil, nil
+	}
 
 	// Build Responses API response
-	content := chatResp.Choices[0].Message.Content
+	choice := chatResp.Choices[0]
+	content := choice.Message.Content
 	status := "completed"
-	if chatResp.Choices[0].FinishReason == "length" {
+	if choice.FinishReason == "length" {
 		status = "incomplete"
 	}
 
-	outputs := []apicompat.ResponsesOutput{
-		{
+	var outputs []apicompat.ResponsesOutput
+	if content != "" || (len(choice.Message.ToolCalls) == 0 && choice.Message.FunctionCall == nil) {
+		outputs = append(outputs, apicompat.ResponsesOutput{
 			Type:   "message",
 			ID:     "msg-" + chatResp.ID,
 			Role:   "assistant",
@@ -1151,15 +1609,24 @@ func (s *OpenAIGatewayService) handleResponsesPassthroughNonStream(
 			Content: []apicompat.ResponsesContentPart{
 				{Type: "output_text", Text: content},
 			},
-		},
+		})
+	}
+	outputs = append(outputs, convertChatToolCallsToResponsesOutputs(choice.Message.ToolCalls)...)
+	if choice.Message.FunctionCall != nil {
+		outputs = append(outputs, apicompat.ResponsesOutput{
+			Type:      "function_call",
+			CallID:    "call_" + chatResp.ID,
+			Name:      choice.Message.FunctionCall.Name,
+			Arguments: normalizeToolCallArguments(choice.Message.FunctionCall.Arguments),
+		})
 	}
 
 	// Add reasoning output if present
-	if chatResp.Choices[0].Message.ReasoningContent != "" {
+	if choice.Message.ReasoningContent != "" {
 		reasoningOutput := apicompat.ResponsesOutput{
 			Type:             "reasoning",
 			ID:               "rs-" + chatResp.ID,
-			EncryptedContent: chatResp.Choices[0].Message.ReasoningContent,
+			EncryptedContent: choice.Message.ReasoningContent,
 		}
 		outputs = append([]apicompat.ResponsesOutput{reasoningOutput}, outputs...)
 	}
@@ -1176,6 +1643,7 @@ func (s *OpenAIGatewayService) handleResponsesPassthroughNonStream(
 			TotalTokens:  chatResp.Usage.TotalTokens,
 		},
 	}
+	storeOpenAIResponsesPassthroughToolContext(responsesResp.ID, outputs)
 
 	respJSON, err := json.Marshal(responsesResp)
 	if err != nil {
@@ -1229,6 +1697,36 @@ func (s *OpenAIGatewayService) handleResponsesPassthroughStream(
 		fmt.Fprintf(c.Writer, "data: %s\n\n", payload)
 		c.Writer.Flush()
 	}
+	toolCallState := newChatToolCallResponseStreamState()
+	messageStarted := false
+	messageOutputIndex := -1
+	ensureMessageStarted := func() int {
+		if messageStarted {
+			return messageOutputIndex
+		}
+		messageStarted = true
+		messageOutputIndex = toolCallState.reserveMessageOutputIndex()
+		writeSSE("response.output_item.added", apicompat.ResponsesStreamEvent{
+			Type: "response.output_item.added",
+			Item: &apicompat.ResponsesOutput{
+				Type:    "message",
+				ID:      msgID,
+				Role:    "assistant",
+				Status:  "in_progress",
+				Content: []apicompat.ResponsesContentPart{},
+			},
+			OutputIndex:    messageOutputIndex,
+			SequenceNumber: seqNum,
+		})
+		writeSSE("response.content_part.added", apicompat.ResponsesStreamEvent{
+			Type:           "response.content_part.added",
+			ItemID:         msgID,
+			OutputIndex:    messageOutputIndex,
+			ContentIndex:   0,
+			SequenceNumber: seqNum,
+		})
+		return messageOutputIndex
+	}
 
 	// Send response.created
 	writeSSE("response.created", apicompat.ResponsesStreamEvent{
@@ -1240,29 +1738,6 @@ func (s *OpenAIGatewayService) handleResponsesPassthroughStream(
 			Status: "in_progress",
 			Output: []apicompat.ResponsesOutput{},
 		},
-		SequenceNumber: seqNum,
-	})
-
-	// Send response.output_item.added
-	writeSSE("response.output_item.added", apicompat.ResponsesStreamEvent{
-		Type: "response.output_item.added",
-		Item: &apicompat.ResponsesOutput{
-			Type:    "message",
-			ID:      msgID,
-			Role:    "assistant",
-			Status:  "in_progress",
-			Content: []apicompat.ResponsesContentPart{},
-		},
-		OutputIndex:    0,
-		SequenceNumber: seqNum,
-	})
-
-	// Send response.content_part.added
-	writeSSE("response.content_part.added", apicompat.ResponsesStreamEvent{
-		Type:           "response.content_part.added",
-		ItemID:         msgID,
-		OutputIndex:    0,
-		ContentIndex:   0,
 		SequenceNumber: seqNum,
 	})
 
@@ -1325,15 +1800,22 @@ func (s *OpenAIGatewayService) handleResponsesPassthroughStream(
 
 		// Handle content delta
 		if content, ok := delta["content"].(string); ok && content != "" {
+			idx := ensureMessageStarted()
 			_, _ = fullContent.WriteString(content)
 			writeSSE("response.output_text.delta", apicompat.ResponsesStreamEvent{
 				Type:           "response.output_text.delta",
 				ItemID:         msgID,
-				OutputIndex:    0,
+				OutputIndex:    idx,
 				ContentIndex:   0,
 				Delta:          content,
 				SequenceNumber: seqNum,
 			})
+		}
+
+		if rawToolCalls, ok := delta["tool_calls"].([]any); ok && len(rawToolCalls) > 0 {
+			for _, event := range toolCallState.processRawToolCallDeltas(rawToolCalls) {
+				writeSSE(event.Type, event)
+			}
 		}
 
 		// Handle finish
@@ -1343,41 +1825,47 @@ func (s *OpenAIGatewayService) handleResponsesPassthroughStream(
 		}
 	}
 
-	// Send response.output_text.done
 	finalText := fullContent.String()
-	writeSSE("response.output_text.done", apicompat.ResponsesStreamEvent{
-		Type:           "response.output_text.done",
-		ItemID:         msgID,
-		OutputIndex:    0,
-		ContentIndex:   0,
-		Text:           finalText,
-		SequenceNumber: seqNum,
-	})
+	if finalText != "" || !toolCallState.hasToolCalls() {
+		idx := ensureMessageStarted()
+		writeSSE("response.output_text.done", apicompat.ResponsesStreamEvent{
+			Type:           "response.output_text.done",
+			ItemID:         msgID,
+			OutputIndex:    idx,
+			ContentIndex:   0,
+			Text:           finalText,
+			SequenceNumber: seqNum,
+		})
 
-	// Send response.content_part.done
-	writeSSE("response.content_part.done", apicompat.ResponsesStreamEvent{
-		Type:           "response.content_part.done",
-		ItemID:         msgID,
-		OutputIndex:    0,
-		ContentIndex:   0,
-		SequenceNumber: seqNum,
-	})
+		// Send response.content_part.done
+		writeSSE("response.content_part.done", apicompat.ResponsesStreamEvent{
+			Type:           "response.content_part.done",
+			ItemID:         msgID,
+			OutputIndex:    idx,
+			ContentIndex:   0,
+			SequenceNumber: seqNum,
+		})
 
-	// Send response.output_item.done
-	writeSSE("response.output_item.done", apicompat.ResponsesStreamEvent{
-		Type: "response.output_item.done",
-		Item: &apicompat.ResponsesOutput{
-			Type:   "message",
-			ID:     msgID,
-			Role:   "assistant",
-			Status: "completed",
-			Content: []apicompat.ResponsesContentPart{
-				{Type: "output_text", Text: finalText},
+		// Send response.output_item.done
+		writeSSE("response.output_item.done", apicompat.ResponsesStreamEvent{
+			Type: "response.output_item.done",
+			Item: &apicompat.ResponsesOutput{
+				Type:   "message",
+				ID:     msgID,
+				Role:   "assistant",
+				Status: "completed",
+				Content: []apicompat.ResponsesContentPart{
+					{Type: "output_text", Text: finalText},
+				},
 			},
-		},
-		OutputIndex:    0,
-		SequenceNumber: seqNum,
-	})
+			OutputIndex:    idx,
+			SequenceNumber: seqNum,
+		})
+	}
+
+	for _, event := range toolCallState.doneEvents() {
+		writeSSE(event.Type, event)
+	}
 
 	// Send response.completed
 	responsesUsage := &apicompat.ResponsesUsage{
@@ -1385,6 +1873,19 @@ func (s *OpenAIGatewayService) handleResponsesPassthroughStream(
 		OutputTokens: usage.OutputTokens,
 		TotalTokens:  usage.InputTokens + usage.OutputTokens,
 	}
+	includeMessage := finalText != "" || !toolCallState.hasToolCalls()
+	messageOutput := apicompat.ResponsesOutput{
+		Type:   "message",
+		ID:     msgID,
+		Role:   "assistant",
+		Status: "completed",
+		Content: []apicompat.ResponsesContentPart{
+			{Type: "output_text", Text: finalText},
+		},
+	}
+	outputs := toolCallState.outputsWithMessage(includeMessage, messageOutput)
+	storeOpenAIResponsesPassthroughToolContext(respID, outputs)
+
 	writeSSE("response.completed", apicompat.ResponsesStreamEvent{
 		Type: "response.completed",
 		Response: &apicompat.ResponsesResponse{
@@ -1392,18 +1893,8 @@ func (s *OpenAIGatewayService) handleResponsesPassthroughStream(
 			Object: "response",
 			Model:  originalModel,
 			Status: "completed",
-			Output: []apicompat.ResponsesOutput{
-				{
-					Type:   "message",
-					ID:     msgID,
-					Role:   "assistant",
-					Status: "completed",
-					Content: []apicompat.ResponsesContentPart{
-						{Type: "output_text", Text: finalText},
-					},
-				},
-			},
-			Usage: responsesUsage,
+			Output: outputs,
+			Usage:  responsesUsage,
 		},
 		SequenceNumber: seqNum,
 	})
@@ -1462,11 +1953,23 @@ func convertResponsesInputToMessages(respReq apicompat.ResponsesRequest) ([]apic
 	for _, item := range items {
 		switch {
 		case item.Type == "function_call":
-			// Skip function calls for basic passthrough
-			continue
+			messages = append(messages, apicompat.ChatMessage{
+				Role: "assistant",
+				ToolCalls: []apicompat.ChatToolCall{{
+					ID:   item.CallID,
+					Type: "function",
+					Function: apicompat.ChatFunctionCall{
+						Name:      item.Name,
+						Arguments: normalizeToolCallArguments(item.Arguments),
+					},
+				}},
+			})
 		case item.Type == "function_call_output":
-			// Skip function outputs for basic passthrough
-			continue
+			messages = append(messages, apicompat.ChatMessage{
+				Role:       "tool",
+				ToolCallID: item.CallID,
+				Content:    rawMessageString(item.Output),
+			})
 		case item.Role == "user" || item.Role == "assistant" || item.Role == "system" || item.Role == "developer":
 			// Map "developer" to "system" — third-party providers (Kimi, DeepSeek, etc.)
 			// do not support the "developer" role and return errors like
