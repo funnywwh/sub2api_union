@@ -703,8 +703,11 @@ func UserSubscriptionFromServiceAdmin(sub *service.UserSubscription) *AdminUserS
 	if sub == nil {
 		return nil
 	}
+	base := userSubscriptionFromServiceBase(sub)
+	base.User = nil
 	return &AdminUserSubscription{
-		UserSubscription: userSubscriptionFromServiceBase(sub),
+		UserSubscription: base,
+		User:             UserFromServiceAdmin(sub.User),
 		AssignedBy:       sub.AssignedBy,
 		AssignedAt:       sub.AssignedAt,
 		Notes:            sub.Notes,

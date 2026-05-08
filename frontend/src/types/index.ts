@@ -1423,7 +1423,7 @@ export interface UserSubscription {
   updated_at: string
   expires_at: string | null
   notes?: string | null
-  user?: User
+  user?: AdminUser
   group?: Group
 }
 

@@ -516,9 +516,10 @@ type UserSubscription struct {
 type AdminUserSubscription struct {
 	UserSubscription
 
-	AssignedBy *int64    `json:"assigned_by"`
-	AssignedAt time.Time `json:"assigned_at"`
-	Notes      string    `json:"notes"`
+	User       *AdminUser `json:"user,omitempty"`
+	AssignedBy *int64     `json:"assigned_by"`
+	AssignedAt time.Time  `json:"assigned_at"`
+	Notes      string     `json:"notes"`
 
 	AssignedByUser *User `json:"assigned_by_user,omitempty"`
 }

@@ -211,9 +211,12 @@
             <span v-else class="text-sm text-gray-400 dark:text-dark-500">-</span>
           </template>
 
-          <template #cell-notes="{ value }">
-            <div class="max-w-[220px] truncate text-sm text-gray-700 dark:text-gray-300" :title="value || ''">
-              {{ value || '-' }}
+          <template #cell-notes="{ row }">
+            <div
+              class="max-w-[220px] truncate text-sm text-gray-700 dark:text-gray-300"
+              :title="row.user?.notes || ''"
+            >
+              {{ row.user?.notes || '-' }}
             </div>
           </template>
 
