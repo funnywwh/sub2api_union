@@ -136,3 +136,7 @@ docs/*
 frontend/coverage/
 aicodex
 output/
+aiapi-home-static/
+tmp_aiapi/
+.tmp_gocache/trim.txt
+frontend/.pnpm-store/

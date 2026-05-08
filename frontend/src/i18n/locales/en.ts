@@ -2451,6 +2451,7 @@ export default {
       columns: {
         user: 'User',
         group: 'Group',
+        notes: 'Notes',
         usage: 'Usage',
         expires: 'Expires',
         status: 'Status',

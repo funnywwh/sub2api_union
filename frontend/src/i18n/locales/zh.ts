@@ -2528,6 +2528,7 @@ export default {
       columns: {
         user: '用户',
         group: '分组',
+        notes: '备注',
         usage: '用量',
         expires: '到期时间',
         status: '状态',

@@ -211,6 +211,12 @@
             <span v-else class="text-sm text-gray-400 dark:text-dark-500">-</span>
           </template>
 
+          <template #cell-notes="{ value }">
+            <div class="max-w-[220px] truncate text-sm text-gray-700 dark:text-gray-300" :title="value || ''">
+              {{ value || '-' }}
+            </div>
+          </template>
+
           <template #cell-usage="{ row }">
             <div class="min-w-[280px] space-y-2">
               <!-- Daily Usage -->
@@ -840,6 +846,7 @@ const allColumns = computed<Column[]>(() => [
     sortable: false
   },
   { key: 'group', label: t('admin.subscriptions.columns.group'), sortable: false },
+  { key: 'notes', label: t('admin.subscriptions.columns.notes'), sortable: false },
   { key: 'usage', label: t('admin.subscriptions.columns.usage'), sortable: false },
   { key: 'expires_at', label: t('admin.subscriptions.columns.expires'), sortable: true },
   { key: 'status', label: t('admin.subscriptions.columns.status'), sortable: true },
