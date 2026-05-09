@@ -4154,6 +4154,7 @@ export default {
       userPeriodRankingHintCost: '按当前筛选范围的费用排序，快速查看高消费用户。',
       userPeriodRankingHintApiKeyToken: '按当前筛选范围的 Token 总量排序，每个用户下的所有 API Key 都参与排名。',
       userPeriodRankingEmpty: '当前筛选范围暂无排行数据',
+      userNotes: '用户备注',
       rankingMode: '排名方式',
       rankingModeApiKey: 'APIKey',
       rankingSortToken: 'Token',

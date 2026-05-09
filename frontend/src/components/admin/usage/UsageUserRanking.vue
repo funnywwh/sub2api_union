@@ -37,6 +37,7 @@
           <tr class="border-b border-gray-100 text-left text-xs uppercase tracking-wide text-gray-500 dark:border-gray-700 dark:text-gray-400">
             <th class="pb-3 pr-4 font-medium">{{ t('admin.usage.rank') }}</th>
             <th class="pb-3 pr-4 font-medium">{{ entityColumnLabel }}</th>
+            <th class="pb-3 pr-4 font-medium">{{ t('admin.usage.userNotes') }}</th>
             <th class="pb-3 pr-4 text-right font-medium">{{ t('admin.dashboard.spendingRankingTokens') }}</th>
             <th class="pb-3 pr-4 text-right font-medium">{{ t('admin.dashboard.spendingRankingSpend') }}</th>
             <th class="pb-3 text-right font-medium">{{ t('admin.usage.periodShare') }}</th>
@@ -78,6 +79,11 @@
               >
                 {{ item.email || fallbackUserLabel(item.user_id) }}
               </button>
+            </td>
+            <td class="py-3 pr-4">
+              <div class="max-w-[320px] truncate text-gray-600 dark:text-gray-300" :title="userNotesLabel(item)">
+                {{ userNotesLabel(item) }}
+              </div>
             </td>
             <td class="py-3 pr-4 text-right font-medium text-gray-900 dark:text-white">
               {{ formatTokens(item.total_tokens) }}
@@ -165,6 +171,8 @@ const secondaryShareLabel = computed(() => (
 ))
 
 const fallbackUserLabel = (userId: number): string => t('admin.redeem.userPrefix', { id: userId })
+
+const userNotesLabel = (item: UserBreakdownItem): string => item.user_notes?.trim() || t('common.none')
 
 const apiKeyLabel = (item: UserBreakdownItem): string => {
   if (item.api_key_name) return item.api_key_name

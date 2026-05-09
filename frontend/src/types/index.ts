@@ -1339,6 +1339,7 @@ export interface GroupStat {
 export interface UserBreakdownItem {
   user_id: number
   email: string
+  user_notes?: string
   api_key_id?: number
   api_key_name?: string
   requests: number

@@ -166,6 +166,7 @@ type UserSpendingRankingResponse struct {
 type UserBreakdownItem struct {
 	UserID      int64   `json:"user_id"`
 	Email       string  `json:"email"`
+	UserNotes   string  `json:"user_notes"`
 	APIKeyID    int64   `json:"api_key_id,omitempty"`
 	APIKeyName  string  `json:"api_key_name,omitempty"`
 	Requests    int64   `json:"requests"`

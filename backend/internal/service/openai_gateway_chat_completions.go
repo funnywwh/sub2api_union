@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,6 +39,108 @@ var cursorResponsesUnsupportedFields = []string{
 	"safety_identifier",
 	"metadata",
 	"stream_options",
+}
+
+// ---------------------------------------------------------------------------
+// Chat reasoning cache — backfills reasoning_content for clients (e.g. Codex)
+// that don't preserve DeepSeek's reasoning_content field across turns.
+// ---------------------------------------------------------------------------
+
+// chatReasoningCacheEntry holds a cached reasoning string with TTL.
+type chatReasoningCacheEntry struct {
+	reasoningContent string
+	expiresAt        time.Time
+}
+
+// chatReasoningCache maps a message fingerprint to its reasoning_content.
+type chatReasoningCache struct {
+	mu      sync.RWMutex
+	entries map[string]chatReasoningCacheEntry
+}
+
+var defaultChatReasoningCache = &chatReasoningCache{
+	entries: make(map[string]chatReasoningCacheEntry),
+}
+
+// chatReasoningCacheTTL is how long we keep a reasoning entry.
+const chatReasoningCacheTTL = 30 * time.Minute
+
+// cacheKeyForChatMessage builds a stable key from content + tool_calls.
+func cacheKeyForChatMessage(msg apicompat.ChatMessage) string {
+	h := sha256.New()
+	h.Write(msg.Content)
+	for _, tc := range msg.ToolCalls {
+		h.Write([]byte(tc.ID))
+		h.Write([]byte(tc.Function.Name))
+		h.Write([]byte(tc.Function.Arguments))
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+func (c *chatReasoningCache) Set(key, reasoning string) {
+	if key == "" || strings.TrimSpace(reasoning) == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.entries == nil {
+		c.entries = make(map[string]chatReasoningCacheEntry)
+	}
+	c.entries[key] = chatReasoningCacheEntry{
+		reasoningContent: reasoning,
+		expiresAt:        time.Now().Add(chatReasoningCacheTTL),
+	}
+}
+
+func (c *chatReasoningCache) Get(key string) string {
+	if key == "" {
+		return ""
+	}
+	c.mu.RLock()
+	entry, ok := c.entries[key]
+	c.mu.RUnlock()
+	if !ok || time.Now().After(entry.expiresAt) {
+		return ""
+	}
+	return entry.reasoningContent
+}
+
+// backfillChatMessagesReasoning injects cached reasoning_content into assistant
+// messages that are missing it. Mutates the slice in-place.
+func backfillChatMessagesReasoning(messages []apicompat.ChatMessage) {
+	for i := range messages {
+		if messages[i].Role != "assistant" {
+			continue
+		}
+		if strings.TrimSpace(messages[i].ReasoningContent) != "" {
+			continue
+		}
+		key := cacheKeyForChatMessage(messages[i])
+		if reasoning := defaultChatReasoningCache.Get(key); reasoning != "" {
+			messages[i].ReasoningContent = reasoning
+		}
+	}
+}
+
+// cacheChatResponseReasoning extracts reasoning_content from a non-streaming
+// Chat Completions response and stores it in the global cache.
+func cacheChatResponseReasoning(respBody []byte) {
+	var chatResp struct {
+		Choices []struct {
+			Message apicompat.ChatMessage `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(respBody, &chatResp); err != nil {
+		return
+	}
+	for _, choice := range chatResp.Choices {
+		msg := choice.Message
+		if msg.Role != "assistant" || strings.TrimSpace(msg.ReasoningContent) == "" {
+			continue
+		}
+		key := cacheKeyForChatMessage(msg)
+		defaultChatReasoningCache.Set(key, msg.ReasoningContent)
+	}
 }
 
 // ForwardAsChatCompletions accepts a Chat Completions request body, converts it
@@ -689,6 +793,14 @@ func (s *OpenAIGatewayService) forwardChatCompletionsPassthrough(
 		return nil, fmt.Errorf("normalize chat completions tool messages: %w", err)
 	}
 
+	// 2a. Backfill reasoning_content for clients that don't preserve it (e.g. Codex).
+	forwardBody, err = backfillReasoningContentInChatBody(forwardBody)
+	if err != nil {
+		logger.L().Warn("openai chat_completions passthrough: failed to backfill reasoning_content",
+			zap.Error(err),
+		)
+	}
+
 	// 3. Get access token (API key for apikey-type accounts)
 	token, _, err := s.GetAccessToken(ctx, account)
 	if err != nil {
@@ -787,6 +899,10 @@ func (s *OpenAIGatewayService) forwardChatCompletionsPassthrough(
 		return nil, fmt.Errorf("read upstream response: %w", err)
 	}
 
+	// Cache reasoning_content so unsupported clients (e.g. Codex) get it backfilled
+	// on the next turn.
+	cacheChatResponseReasoning(respBody)
+
 	// Extract usage from response for billing
 	var usage OpenAIUsage
 	var chatResp map[string]any
@@ -870,6 +986,9 @@ func (s *OpenAIGatewayService) handlePassthroughStreamingResponse(
 		}
 	}
 
+	// Collector for reasoning_content so unsupported clients get it backfilled.
+	var streamContent, streamReasoning strings.Builder
+
 	for scanner.Scan() {
 		line := scanner.Text()
 
@@ -893,6 +1012,16 @@ func (s *OpenAIGatewayService) handlePassthroughStreamingResponse(
 					}
 				}
 			}
+			// Accumulate reasoning/content deltas for caching.
+			var deltaChunk apicompat.ChatCompletionsChunk
+			if err := json.Unmarshal([]byte(payload), &deltaChunk); err == nil && len(deltaChunk.Choices) > 0 {
+				if deltaChunk.Choices[0].Delta.Content != nil {
+					streamContent.WriteString(*deltaChunk.Choices[0].Delta.Content)
+				}
+				if deltaChunk.Choices[0].Delta.ReasoningContent != nil {
+					streamReasoning.WriteString(*deltaChunk.Choices[0].Delta.ReasoningContent)
+				}
+			}
 		}
 
 		if _, err := fmt.Fprintln(c.Writer, line); err != nil {
@@ -914,6 +1043,16 @@ func (s *OpenAIGatewayService) handlePassthroughStreamingResponse(
 				zap.String("request_id", requestID),
 			)
 		}
+	}
+
+	// Cache collected reasoning content for backfill on the next turn.
+	if streamReasoning.Len() > 0 {
+		msg := apicompat.ChatMessage{
+			Role:             "assistant",
+			Content:          rawMessageString(streamContent.String()),
+			ReasoningContent: streamReasoning.String(),
+		}
+		defaultChatReasoningCache.Set(cacheKeyForChatMessage(msg), msg.ReasoningContent)
 	}
 
 	// Ensure [DONE] sentinel is sent
@@ -1117,7 +1256,12 @@ func (s *openAIResponsesPassthroughToolContextStore) Load(responseID string) []a
 
 func chatMessagesForResponsesFunctionCalls(outputs []apicompat.ResponsesOutput) []apicompat.ChatMessage {
 	var toolCalls []apicompat.ChatToolCall
+	var reasoning strings.Builder
 	for i, output := range outputs {
+		if output.Type == "reasoning" {
+			_, _ = reasoning.WriteString(responsesReasoningText(output))
+			continue
+		}
 		if output.Type != "function_call" || strings.TrimSpace(output.Name) == "" {
 			continue
 		}
@@ -1137,7 +1281,34 @@ func chatMessagesForResponsesFunctionCalls(outputs []apicompat.ResponsesOutput) 
 	if len(toolCalls) == 0 {
 		return nil
 	}
-	return []apicompat.ChatMessage{{Role: "assistant", ToolCalls: toolCalls}}
+	message := apicompat.ChatMessage{Role: "assistant", ToolCalls: toolCalls}
+	if reasoningContent := reasoning.String(); reasoningContent != "" {
+		message.ReasoningContent = reasoningContent
+	}
+	return []apicompat.ChatMessage{message}
+}
+
+func responsesReasoningText(output apicompat.ResponsesOutput) string {
+	if output.EncryptedContent != "" {
+		return output.EncryptedContent
+	}
+	var b strings.Builder
+	for _, summary := range output.Summary {
+		_, _ = b.WriteString(summary.Text)
+	}
+	return b.String()
+}
+
+func prependResponsesReasoningOutput(outputs []apicompat.ResponsesOutput, id string, reasoningContent string) []apicompat.ResponsesOutput {
+	if reasoningContent == "" {
+		return outputs
+	}
+	reasoningOutput := apicompat.ResponsesOutput{
+		Type:             "reasoning",
+		ID:               id,
+		EncryptedContent: reasoningContent,
+	}
+	return append([]apicompat.ResponsesOutput{reasoningOutput}, outputs...)
 }
 
 func cloneChatMessages(messages []apicompat.ChatMessage) []apicompat.ChatMessage {
@@ -1626,15 +1797,7 @@ func (s *OpenAIGatewayService) handleResponsesPassthroughNonStream(
 		})
 	}
 
-	// Add reasoning output if present
-	if choice.Message.ReasoningContent != "" {
-		reasoningOutput := apicompat.ResponsesOutput{
-			Type:             "reasoning",
-			ID:               "rs-" + chatResp.ID,
-			EncryptedContent: choice.Message.ReasoningContent,
-		}
-		outputs = append([]apicompat.ResponsesOutput{reasoningOutput}, outputs...)
-	}
+	outputs = prependResponsesReasoningOutput(outputs, "rs-"+chatResp.ID, choice.Message.ReasoningContent)
 
 	responsesResp := apicompat.ResponsesResponse{
 		ID:     "resp-" + chatResp.ID,
@@ -1889,6 +2052,7 @@ func (s *OpenAIGatewayService) handleResponsesPassthroughStream(
 		},
 	}
 	outputs := toolCallState.outputsWithMessage(includeMessage, messageOutput)
+	outputs = prependResponsesReasoningOutput(outputs, "rs-"+respID, fullReasoning.String())
 	storeOpenAIResponsesPassthroughToolContext(respID, outputs)
 
 	writeSSE("response.completed", apicompat.ResponsesStreamEvent{
@@ -1921,7 +2085,7 @@ func rawMessageString(s string) json.RawMessage {
 	return json.RawMessage(b)
 }
 
-func appendResponsesFunctionCallMessage(messages []apicompat.ChatMessage, item apicompat.ResponsesInputItem) []apicompat.ChatMessage {
+func appendResponsesFunctionCallMessage(messages []apicompat.ChatMessage, item apicompat.ResponsesInputItem, reasoningContent string) []apicompat.ChatMessage {
 	toolCall := apicompat.ChatToolCall{
 		ID:   strings.TrimSpace(item.CallID),
 		Type: "function",
@@ -1933,14 +2097,36 @@ func appendResponsesFunctionCallMessage(messages []apicompat.ChatMessage, item a
 
 	last := len(messages) - 1
 	if last >= 0 && messages[last].Role == "assistant" {
+		appendChatMessageReasoningContent(&messages[last], reasoningContent)
 		messages[last].ToolCalls = append(messages[last].ToolCalls, toolCall)
 		return messages
 	}
 
-	return append(messages, apicompat.ChatMessage{
+	message := apicompat.ChatMessage{
 		Role:      "assistant",
 		ToolCalls: []apicompat.ChatToolCall{toolCall},
-	})
+	}
+	appendChatMessageReasoningContent(&message, reasoningContent)
+	return append(messages, message)
+}
+
+func appendChatMessageReasoningContent(message *apicompat.ChatMessage, reasoningContent string) {
+	if strings.TrimSpace(reasoningContent) == "" {
+		return
+	}
+	message.ReasoningContent += reasoningContent
+}
+
+func appendReasoningToLastAssistantToolMessage(messages []apicompat.ChatMessage, reasoningContent string) bool {
+	if strings.TrimSpace(reasoningContent) == "" {
+		return false
+	}
+	last := len(messages) - 1
+	if last < 0 || messages[last].Role != "assistant" || len(messages[last].ToolCalls) == 0 {
+		return false
+	}
+	appendChatMessageReasoningContent(&messages[last], reasoningContent)
+	return true
 }
 
 func normalizeChatCompletionsPassthroughBody(body []byte) ([]byte, error) {
@@ -1957,6 +2143,26 @@ func normalizeChatCompletionsPassthroughBody(body []byte) ([]byte, error) {
 		return body, nil
 	}
 	messagesJSON, err := json.Marshal(normalized)
+	if err != nil {
+		return nil, err
+	}
+	return sjson.SetRawBytes(body, "messages", messagesJSON)
+}
+
+// backfillReasoningContentInChatBody parses the messages array, injects cached
+// reasoning_content into assistant messages that are missing it, and rewrites
+// the body. No-op when nothing changes.
+func backfillReasoningContentInChatBody(body []byte) ([]byte, error) {
+	messagesResult := gjson.GetBytes(body, "messages")
+	if !messagesResult.Exists() || !messagesResult.IsArray() {
+		return body, nil
+	}
+	var messages []apicompat.ChatMessage
+	if err := json.Unmarshal([]byte(messagesResult.Raw), &messages); err != nil {
+		return nil, err
+	}
+	backfillChatMessagesReasoning(messages)
+	messagesJSON, err := json.Marshal(messages)
 	if err != nil {
 		return nil, err
 	}
@@ -2126,10 +2332,18 @@ func convertResponsesInputToMessages(respReq apicompat.ResponsesRequest) ([]apic
 		return nil, fmt.Errorf("input must be a string or array: %w", err)
 	}
 
+	var pendingReasoning strings.Builder
 	for _, item := range items {
 		switch {
+		case item.Type == "reasoning":
+			reasoningContent := responsesInputReasoningText(item)
+			if !appendReasoningToLastAssistantToolMessage(messages, reasoningContent) {
+				_, _ = pendingReasoning.WriteString(reasoningContent)
+			}
 		case item.Type == "function_call":
-			messages = appendResponsesFunctionCallMessage(messages, item)
+			reasoningContent := pendingReasoning.String()
+			pendingReasoning.Reset()
+			messages = appendResponsesFunctionCallMessage(messages, item, reasoningContent)
 		case item.Type == "function_call_output":
 			messages = append(messages, apicompat.ChatMessage{
 				Role:       "tool",
@@ -2169,6 +2383,12 @@ func convertResponsesInputToMessages(respReq apicompat.ResponsesRequest) ([]apic
 					msg.Content = item.Content
 				}
 			}
+			// Attach pending reasoning to assistant messages so it isn't lost
+			// when a reasoning item appears before a role-based assistant message.
+			if role == "assistant" && pendingReasoning.Len() > 0 {
+				msg.ReasoningContent = pendingReasoning.String()
+				pendingReasoning.Reset()
+			}
 			messages = append(messages, msg)
 		default:
 			// Unknown type — try as a user message with content
@@ -2185,4 +2405,15 @@ func convertResponsesInputToMessages(respReq apicompat.ResponsesRequest) ([]apic
 	}
 
 	return messages, nil
+}
+
+func responsesInputReasoningText(item apicompat.ResponsesInputItem) string {
+	if item.EncryptedContent != "" {
+		return item.EncryptedContent
+	}
+	var b strings.Builder
+	for _, summary := range item.Summary {
+		_, _ = b.WriteString(summary.Text)
+	}
+	return b.String()
 }

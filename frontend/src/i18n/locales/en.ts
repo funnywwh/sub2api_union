@@ -3998,6 +3998,7 @@ export default {
       userPeriodRankingHintCost: 'Sorted by spend in the current filtered range.',
       userPeriodRankingHintApiKeyToken: 'Sorted by total tokens in the current filtered range; all API keys under each user participate.',
       userPeriodRankingEmpty: 'No ranking data in the current filtered range',
+      userNotes: 'User Notes',
       rankingMode: 'Rank By',
       rankingModeApiKey: 'APIKey',
       rankingSortToken: 'Token',

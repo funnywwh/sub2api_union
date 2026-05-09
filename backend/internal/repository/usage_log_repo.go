@@ -3157,13 +3157,13 @@ func (r *usageLogRepository) GetUserBreakdownStats(ctx context.Context, startTim
 	apiKeyIDSelect := "0 as api_key_id"
 	apiKeyNameSelect := "'' as api_key_name"
 	apiKeyJoin := ""
-	groupBy := "ul.user_id, u.email"
+	groupBy := "ul.user_id, u.email, u.notes"
 	orderTieBreaker := "user_id ASC"
 	if rankBy == "api_key" {
 		apiKeyIDSelect = "COALESCE(ul.api_key_id, 0) as api_key_id"
 		apiKeyNameSelect = "COALESCE(k.name, '') as api_key_name"
 		apiKeyJoin = "LEFT JOIN api_keys k ON k.id = ul.api_key_id"
-		groupBy = "ul.user_id, u.email, ul.api_key_id, k.name"
+		groupBy = "ul.user_id, u.email, u.notes, ul.api_key_id, k.name"
 		orderTieBreaker = "user_id ASC, api_key_id ASC"
 	}
 
@@ -3171,6 +3171,7 @@ func (r *usageLogRepository) GetUserBreakdownStats(ctx context.Context, startTim
 		SELECT
 			COALESCE(ul.user_id, 0) as user_id,
 			COALESCE(u.email, '') as email,
+			COALESCE(u.notes, '') as user_notes,
 			%s,
 			%s,
 			COUNT(*) as requests,
@@ -3253,6 +3254,7 @@ func (r *usageLogRepository) GetUserBreakdownStats(ctx context.Context, startTim
 		if err := rows.Scan(
 			&row.UserID,
 			&row.Email,
+			&row.UserNotes,
 			&row.APIKeyID,
 			&row.APIKeyName,
 			&row.Requests,

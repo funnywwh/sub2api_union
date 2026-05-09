@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -286,6 +287,93 @@ func TestNormalizeChatToolCallSequencesDowngradesDuplicateToolMessages(t *testin
 	require.Contains(t, string(normalized[2].Content), "second")
 }
 
+func TestChatMessagesForResponsesFunctionCallsPreservesReasoning(t *testing.T) {
+	t.Parallel()
+
+	messages := chatMessagesForResponsesFunctionCalls([]apicompat.ResponsesOutput{
+		{Type: "reasoning", EncryptedContent: "think before tool"},
+		{Type: "function_call", CallID: "call_reason", Name: "exec_cmd", Arguments: `{"command":"pwd"}`},
+	})
+
+	require.Len(t, messages, 1)
+	require.Equal(t, "assistant", messages[0].Role)
+	require.Equal(t, "think before tool", messages[0].ReasoningContent)
+	require.Len(t, messages[0].ToolCalls, 1)
+	require.Equal(t, "call_reason", messages[0].ToolCalls[0].ID)
+}
+
+func TestForwardResponsesPassthroughPreservesInlineReasoningContext(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	upstream := &chatCompletionsHTTPUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid-inline-reasoning"}},
+		Body: io.NopCloser(strings.NewReader(`{
+			"id":"chatcmpl_inline_reasoning_done",
+			"model":"deepseek-ai/deepseek-v4-pro",
+			"choices":[{"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}],
+			"usage":{"prompt_tokens":7,"completion_tokens":2,"total_tokens":9}
+		}`)),
+	}}
+	svc := &OpenAIGatewayService{
+		cfg:           &config.Config{},
+		httpUpstream:  upstream,
+		toolCorrector: NewCodexToolCorrector(),
+	}
+	svc.cfg.Security.URLAllowlist.Enabled = false
+	svc.cfg.Security.URLAllowlist.AllowInsecureHTTP = true
+
+	account := &Account{
+		ID:          1,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":  "sk-test",
+			"base_url": "https://api.deepseek.com",
+		},
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	_, err := svc.ForwardResponsesPassthrough(context.Background(), c, account, []byte(`{
+		"model":"deepseek-ai/deepseek-v4-pro",
+		"input":[
+			{"type":"reasoning","encrypted_content":"think inline"},
+			{"type":"function_call","call_id":"call_inline","name":"exec_cmd","arguments":"{\"command\":\"git status --short\"}"},
+			{"type":"function_call_output","call_id":"call_inline","output":" M file"}
+		]
+	}`), "")
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	require.Equal(t, "assistant", gjson.GetBytes(upstream.lastBody, "messages.0.role").String())
+	require.Equal(t, "think inline", gjson.GetBytes(upstream.lastBody, "messages.0.reasoning_content").String())
+	require.Equal(t, "call_inline", gjson.GetBytes(upstream.lastBody, "messages.0.tool_calls.0.id").String())
+	require.Equal(t, "tool", gjson.GetBytes(upstream.lastBody, "messages.1.role").String())
+	require.Equal(t, "call_inline", gjson.GetBytes(upstream.lastBody, "messages.1.tool_call_id").String())
+}
+
+func TestConvertResponsesInputToMessagesPreservesReasoningAfterFunctionCall(t *testing.T) {
+	t.Parallel()
+
+	messages, err := convertResponsesInputToMessages(apicompat.ResponsesRequest{Input: json.RawMessage(`[
+		{"type":"function_call","call_id":"call_summary","name":"exec_cmd","arguments":"{\"command\":\"pwd\"}"},
+		{"type":"reasoning","summary":[{"type":"summary_text","text":"think summary"}]},
+		{"type":"function_call_output","call_id":"call_summary","output":"/repo"}
+	]`)})
+
+	require.NoError(t, err)
+	require.Len(t, messages, 2)
+	require.Equal(t, "assistant", messages[0].Role)
+	require.Equal(t, "think summary", messages[0].ReasoningContent)
+	require.Len(t, messages[0].ToolCalls, 1)
+	require.Equal(t, "call_summary", messages[0].ToolCalls[0].ID)
+	require.Equal(t, "tool", messages[1].Role)
+	require.Equal(t, "call_summary", messages[1].ToolCallID)
+}
+
 func TestForwardChatCompletionsPassthroughNormalizesToolMessages(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -340,6 +428,126 @@ func TestForwardChatCompletionsPassthroughNormalizesToolMessages(t *testing.T) {
 	require.Equal(t, "call_done", gjson.GetBytes(upstream.lastBody, "messages.2.tool_call_id").String())
 }
 
+func TestForwardChatCompletionsPassthroughPreservesReasoningContent(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	upstream := &chatCompletionsHTTPUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid-reasoning"}},
+		Body: io.NopCloser(strings.NewReader(`{
+			"id":"chatcmpl_done",
+			"model":"deepseek-chat",
+			"choices":[{"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}],
+			"usage":{"prompt_tokens":7,"completion_tokens":2,"total_tokens":9}
+		}`)),
+	}}
+	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
+	svc.cfg.Security.URLAllowlist.Enabled = false
+	svc.cfg.Security.URLAllowlist.AllowInsecureHTTP = true
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	account := &Account{
+		ID:          1,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":  "sk-test",
+			"base_url": "https://api.deepseek.com",
+		},
+	}
+	body := []byte(`{
+		"model":"deepseek-chat",
+		"messages":[
+			{"role":"user","content":"continue"},
+			{"role":"assistant","content":null,"reasoning_content":"think about it","tool_calls":[
+				{"id":"call_done","type":"function","function":{"name":"exec_cmd","arguments":"{\"command\":\"pwd\"}"}},
+				{"id":"call_missing","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"README.md\"}"}}
+			]},
+			{"role":"tool","tool_call_id":"call_done","content":"/repo"}
+		]
+	}`)
+
+	result, err := svc.ForwardAsChatCompletions(context.Background(), c, account, body, "", "")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	// Verify reasoning_content is preserved even when tool messages are normalized
+	require.Equal(t, "think about it", gjson.GetBytes(upstream.lastBody, "messages.1.reasoning_content").String())
+	require.Equal(t, "assistant", gjson.GetBytes(upstream.lastBody, "messages.1.role").String())
+	require.Equal(t, int64(1), gjson.GetBytes(upstream.lastBody, "messages.1.tool_calls.#").Int())
+}
+
+func TestForwardChatCompletionsPassthroughBackfillsReasoningContent(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	// First turn — upstream returns reasoning_content
+	upstream1 := &chatCompletionsHTTPUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid-turn1"}},
+		Body: io.NopCloser(strings.NewReader(`{
+			"id":"chatcmpl_turn1",
+			"model":"deepseek-reasoner",
+			"choices":[{"message":{"role":"assistant","content":"42","reasoning_content":"Let me calculate..."},"finish_reason":"stop"}],
+			"usage":{"prompt_tokens":5,"completion_tokens":3,"total_tokens":8}
+		}`)),
+	}}
+	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream1}
+	svc.cfg.Security.URLAllowlist.Enabled = false
+	svc.cfg.Security.URLAllowlist.AllowInsecureHTTP = true
+
+	rec1 := httptest.NewRecorder()
+	c1, _ := gin.CreateTestContext(rec1)
+	c1.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	account := &Account{
+		ID:          1,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":  "sk-test",
+			"base_url": "https://api.deepseek.com",
+		},
+	}
+	body1 := []byte(`{"model":"deepseek-reasoner","messages":[{"role":"user","content":"what is 6*7"}]}`)
+
+	_, err := svc.ForwardAsChatCompletions(context.Background(), c1, account, body1, "", "")
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, rec1.Code)
+
+	// Second turn — client (e.g. Codex) sends assistant message WITHOUT reasoning_content
+	upstream2 := &chatCompletionsHTTPUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid-turn2"}},
+		Body: io.NopCloser(strings.NewReader(`{
+			"id":"chatcmpl_turn2",
+			"model":"deepseek-reasoner",
+			"choices":[{"message":{"role":"assistant","content":"Correct!"},"finish_reason":"stop"}],
+			"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}
+		}`)),
+	}}
+	svc.httpUpstream = upstream2
+
+	rec2 := httptest.NewRecorder()
+	c2, _ := gin.CreateTestContext(rec2)
+	c2.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	body2 := []byte(`{"model":"deepseek-reasoner","messages":[{"role":"user","content":"what is 6*7"},{"role":"assistant","content":"42"},{"role":"user","content":"confirm"}]}`)
+
+	_, err = svc.ForwardAsChatCompletions(context.Background(), c2, account, body2, "", "")
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, rec2.Code)
+
+	// Verify that sub2api backfilled the cached reasoning_content
+	require.Equal(t, "42", gjson.GetBytes(upstream2.lastBody, "messages.1.content").String())
+	require.Equal(t, "Let me calculate...", gjson.GetBytes(upstream2.lastBody, "messages.1.reasoning_content").String())
+}
+
 func TestForwardResponsesPassthroughSendsToolsAndConvertsToolCall(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -349,7 +557,7 @@ func TestForwardResponsesPassthroughSendsToolsAndConvertsToolCall(t *testing.T) 
 		Body: io.NopCloser(strings.NewReader(`{
 			"id":"chatcmpl_tool",
 			"model":"deepseek-ai/deepseek-v4-pro",
-			"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"call_abc","type":"function","function":{"name":"exec_cmd","arguments":"{\"command\":\"git status --short\"}"}}]},"finish_reason":"tool_calls"}],
+			"choices":[{"message":{"role":"assistant","reasoning_content":"think about git status","tool_calls":[{"id":"call_abc","type":"function","function":{"name":"exec_cmd","arguments":"{\"command\":\"git status --short\"}"}}]},"finish_reason":"tool_calls"}],
 			"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}
 		}`)),
 	}}
@@ -392,10 +600,16 @@ func TestForwardResponsesPassthroughSendsToolsAndConvertsToolCall(t *testing.T) 
 	require.Equal(t, "exec_cmd", gjson.GetBytes(upstream.lastBody, "tool_choice.function.name").String())
 
 	output := rec.Body.String()
-	require.Equal(t, "function_call", gjson.Get(output, "output.0.type").String())
-	require.Equal(t, "call_abc", gjson.Get(output, "output.0.call_id").String())
-	require.Equal(t, "exec_cmd", gjson.Get(output, "output.0.name").String())
-	require.JSONEq(t, `{"command":"git status --short"}`, gjson.Get(output, "output.0.arguments").String())
+	require.Equal(t, "reasoning", gjson.Get(output, "output.0.type").String())
+	require.Equal(t, "think about git status", gjson.Get(output, "output.0.encrypted_content").String())
+	require.Equal(t, "function_call", gjson.Get(output, "output.1.type").String())
+	require.Equal(t, "call_abc", gjson.Get(output, "output.1.call_id").String())
+	require.Equal(t, "exec_cmd", gjson.Get(output, "output.1.name").String())
+	require.JSONEq(t, `{"command":"git status --short"}`, gjson.Get(output, "output.1.arguments").String())
+
+	contextMessages := loadOpenAIResponsesPassthroughToolContext("resp-chatcmpl_tool")
+	require.Len(t, contextMessages, 1)
+	require.Equal(t, "think about git status", contextMessages[0].ReasoningContent)
 }
 
 func TestHandleResponsesPassthroughStreamConvertsToolCalls(t *testing.T) {
@@ -403,6 +617,7 @@ func TestHandleResponsesPassthroughStreamConvertsToolCalls(t *testing.T) {
 
 	stream := strings.Join([]string{
 		`data: {"id":"chatcmpl_1","choices":[{"delta":{"role":"assistant"},"finish_reason":null}]}`,
+		`data: {"id":"chatcmpl_1","choices":[{"delta":{"reasoning_content":"think stream"},"finish_reason":null}]}`,
 		`data: {"id":"chatcmpl_1","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_abc","type":"function","function":{"name":"exec_cmd","arguments":"{\"command\":"}}]},"finish_reason":null}]}`,
 		`data: {"id":"chatcmpl_1","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"pwd\"}"}}]},"finish_reason":null}]}`,
 		`data: {"id":"chatcmpl_1","choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`,
@@ -448,8 +663,14 @@ func TestHandleResponsesPassthroughStreamConvertsToolCalls(t *testing.T) {
 
 	completedPayloads := ssePayloadsByType(body, "response.completed")
 	require.Len(t, completedPayloads, 1)
-	require.Equal(t, "function_call", gjson.Get(completedPayloads[0], "response.output.0.type").String())
-	require.Equal(t, "call_abc", gjson.Get(completedPayloads[0], "response.output.0.call_id").String())
+	require.Equal(t, "reasoning", gjson.Get(completedPayloads[0], "response.output.0.type").String())
+	require.Equal(t, "think stream", gjson.Get(completedPayloads[0], "response.output.0.encrypted_content").String())
+	require.Equal(t, "function_call", gjson.Get(completedPayloads[0], "response.output.1.type").String())
+	require.Equal(t, "call_abc", gjson.Get(completedPayloads[0], "response.output.1.call_id").String())
+	respID := gjson.Get(completedPayloads[0], "response.id").String()
+	contextMessages := loadOpenAIResponsesPassthroughToolContext(respID)
+	require.Len(t, contextMessages, 1)
+	require.Equal(t, "think stream", contextMessages[0].ReasoningContent)
 }
 
 func ssePayloadsByType(body, eventType string) []string {
@@ -586,7 +807,7 @@ func TestOpenAIResponsesPassthroughToolContextPrepend(t *testing.T) {
 		Body: io.NopCloser(strings.NewReader(`{
 			"id":"chatcmpl_context_source",
 			"model":"deepseek-ai/deepseek-v4-pro",
-			"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"call_ctx","type":"function","function":{"name":"exec_cmd","arguments":"{\"command\":\"pwd\"}"}}]},"finish_reason":"tool_calls"}],
+			"choices":[{"message":{"role":"assistant","reasoning_content":"think ctx","tool_calls":[{"id":"call_ctx","type":"function","function":{"name":"exec_cmd","arguments":"{\"command\":\"pwd\"}"}}]},"finish_reason":"tool_calls"}],
 			"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}
 		}`)),
 	}}
@@ -642,6 +863,7 @@ func TestOpenAIResponsesPassthroughToolContextPrepend(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec2.Code)
 
 	require.Equal(t, "assistant", gjson.GetBytes(upstream.lastBody, "messages.0.role").String())
+	require.Equal(t, "think ctx", gjson.GetBytes(upstream.lastBody, "messages.0.reasoning_content").String())
 	require.Equal(t, "call_ctx", gjson.GetBytes(upstream.lastBody, "messages.0.tool_calls.0.id").String())
 	require.Equal(t, "exec_cmd", gjson.GetBytes(upstream.lastBody, "messages.0.tool_calls.0.function.name").String())
 	require.Equal(t, "tool", gjson.GetBytes(upstream.lastBody, "messages.1.role").String())
