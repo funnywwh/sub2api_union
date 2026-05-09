@@ -197,6 +197,149 @@ func TestConvertResponsesInputToMessagesPreservesToolContext(t *testing.T) {
 	require.Equal(t, `"/repo"`, string(messages[2].Content))
 }
 
+func TestConvertResponsesInputToMessagesMergesConsecutiveFunctionCalls(t *testing.T) {
+	t.Parallel()
+
+	req := apicompat.ResponsesRequest{
+		Input: []byte(`[
+			{"type":"function_call","call_id":"call_1","name":"exec_cmd","arguments":"{\"command\":\"pwd\"}"},
+			{"type":"function_call","call_id":"call_2","name":"read_file","arguments":"{\"path\":\"README.md\"}"},
+			{"type":"function_call_output","call_id":"call_1","output":"/repo"},
+			{"type":"function_call_output","call_id":"call_2","output":"ok"}
+		]`),
+	}
+
+	messages, err := convertResponsesInputToMessages(req)
+	require.NoError(t, err)
+	require.Len(t, messages, 3)
+	require.Equal(t, "assistant", messages[0].Role)
+	require.Len(t, messages[0].ToolCalls, 2)
+	require.Equal(t, "call_1", messages[0].ToolCalls[0].ID)
+	require.Equal(t, "call_2", messages[0].ToolCalls[1].ID)
+	require.Equal(t, "tool", messages[1].Role)
+	require.Equal(t, "call_1", messages[1].ToolCallID)
+	require.Equal(t, "tool", messages[2].Role)
+	require.Equal(t, "call_2", messages[2].ToolCallID)
+}
+
+func TestNormalizeChatToolCallSequencesDropsUnansweredCalls(t *testing.T) {
+	t.Parallel()
+
+	messages := []apicompat.ChatMessage{
+		{
+			Role: "assistant",
+			ToolCalls: []apicompat.ChatToolCall{
+				{ID: "call_done", Type: "function", Function: apicompat.ChatFunctionCall{Name: "exec_cmd", Arguments: `{"command":"pwd"}`}},
+				{ID: "call_missing", Type: "function", Function: apicompat.ChatFunctionCall{Name: "read_file", Arguments: `{"path":"README.md"}`}},
+			},
+		},
+		{Role: "tool", ToolCallID: "call_done", Content: rawMessageString("/repo")},
+	}
+
+	normalized := normalizeChatToolCallSequences(messages)
+	require.Len(t, normalized, 2)
+	require.Equal(t, "assistant", normalized[0].Role)
+	require.Len(t, normalized[0].ToolCalls, 1)
+	require.Equal(t, "call_done", normalized[0].ToolCalls[0].ID)
+	require.Equal(t, "tool", normalized[1].Role)
+	require.Equal(t, "call_done", normalized[1].ToolCallID)
+}
+
+func TestNormalizeChatToolCallSequencesDowngradesOrphanToolMessage(t *testing.T) {
+	t.Parallel()
+
+	messages := []apicompat.ChatMessage{
+		{Role: "user", Content: rawMessageString("continue")},
+		{Role: "tool", ToolCallID: "call_orphan", Content: rawMessageString("ok")},
+	}
+
+	normalized := normalizeChatToolCallSequences(messages)
+	require.Len(t, normalized, 2)
+	require.Equal(t, "user", normalized[1].Role)
+	require.Empty(t, normalized[1].ToolCallID)
+	require.Contains(t, string(normalized[1].Content), "call_orphan")
+	require.Contains(t, string(normalized[1].Content), "ok")
+}
+
+func TestNormalizeChatToolCallSequencesDowngradesDuplicateToolMessages(t *testing.T) {
+	t.Parallel()
+
+	messages := []apicompat.ChatMessage{
+		{
+			Role: "assistant",
+			ToolCalls: []apicompat.ChatToolCall{
+				{ID: "call_dup", Type: "function", Function: apicompat.ChatFunctionCall{Name: "exec_cmd", Arguments: `{"command":"pwd"}`}},
+			},
+		},
+		{Role: "tool", ToolCallID: "call_dup", Content: rawMessageString("first")},
+		{Role: "tool", ToolCallID: "call_dup", Content: rawMessageString("second")},
+	}
+
+	normalized := normalizeChatToolCallSequences(messages)
+	require.Len(t, normalized, 3)
+	require.Equal(t, "assistant", normalized[0].Role)
+	require.Len(t, normalized[0].ToolCalls, 1)
+	require.Equal(t, "tool", normalized[1].Role)
+	require.Equal(t, "call_dup", normalized[1].ToolCallID)
+	require.Equal(t, "user", normalized[2].Role)
+	require.Empty(t, normalized[2].ToolCallID)
+	require.Contains(t, string(normalized[2].Content), "second")
+}
+
+func TestForwardChatCompletionsPassthroughNormalizesToolMessages(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	upstream := &chatCompletionsHTTPUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid-chat-tool-normalized"}},
+		Body: io.NopCloser(strings.NewReader(`{
+			"id":"chatcmpl_done",
+			"model":"deepseek-chat",
+			"choices":[{"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}],
+			"usage":{"prompt_tokens":7,"completion_tokens":2,"total_tokens":9}
+		}`)),
+	}}
+	svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
+	svc.cfg.Security.URLAllowlist.Enabled = false
+	svc.cfg.Security.URLAllowlist.AllowInsecureHTTP = true
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	account := &Account{
+		ID:          1,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":  "sk-test",
+			"base_url": "https://api.deepseek.com",
+		},
+	}
+	body := []byte(`{
+		"model":"deepseek-chat",
+		"messages":[
+			{"role":"user","content":"continue"},
+			{"role":"assistant","tool_calls":[
+				{"id":"call_done","type":"function","function":{"name":"exec_cmd","arguments":"{\"command\":\"pwd\"}"}},
+				{"id":"call_missing","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"README.md\"}"}}
+			]},
+			{"role":"tool","tool_call_id":"call_done","content":"/repo"}
+		]
+	}`)
+
+	result, err := svc.ForwardAsChatCompletions(context.Background(), c, account, body, "", "")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, "assistant", gjson.GetBytes(upstream.lastBody, "messages.1.role").String())
+	require.Equal(t, int64(1), gjson.GetBytes(upstream.lastBody, "messages.1.tool_calls.#").Int())
+	require.Equal(t, "call_done", gjson.GetBytes(upstream.lastBody, "messages.1.tool_calls.0.id").String())
+	require.Equal(t, "tool", gjson.GetBytes(upstream.lastBody, "messages.2.role").String())
+	require.Equal(t, "call_done", gjson.GetBytes(upstream.lastBody, "messages.2.tool_call_id").String())
+}
+
 func TestForwardResponsesPassthroughSendsToolsAndConvertsToolCall(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -357,6 +500,81 @@ func TestChatToolCallResponseStreamStateDelaysArgumentsUntilName(t *testing.T) {
 	require.Equal(t, "response.function_call_arguments.delta", events[1].Type)
 	require.Equal(t, 0, events[1].OutputIndex)
 	require.Equal(t, `{"command":"pwd"}`, events[1].Delta)
+}
+
+func TestForwardResponsesPassthroughToolContextDropsUnansweredCalls(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	upstream := &chatCompletionsHTTPUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid-tool-context-partial-1"}},
+		Body: io.NopCloser(strings.NewReader(`{
+			"id":"chatcmpl_context_partial_source",
+			"model":"deepseek-ai/deepseek-v4-pro",
+			"choices":[{"message":{"role":"assistant","tool_calls":[
+				{"id":"call_a","type":"function","function":{"name":"exec_cmd","arguments":"{\"command\":\"pwd\"}"}},
+				{"id":"call_b","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"README.md\"}"}}
+			]},"finish_reason":"tool_calls"}],
+			"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}
+		}`)),
+	}}
+	svc := &OpenAIGatewayService{
+		cfg:           &config.Config{},
+		httpUpstream:  upstream,
+		toolCorrector: NewCodexToolCorrector(),
+	}
+	svc.cfg.Security.URLAllowlist.Enabled = false
+	svc.cfg.Security.URLAllowlist.AllowInsecureHTTP = true
+
+	account := &Account{
+		ID:          1,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":  "sk-test",
+			"base_url": "https://api.deepseek.com",
+		},
+	}
+
+	rec1 := httptest.NewRecorder()
+	c1, _ := gin.CreateTestContext(rec1)
+	c1.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	_, err := svc.ForwardResponsesPassthrough(context.Background(), c1, account, []byte(`{
+		"model":"deepseek-ai/deepseek-v4-pro",
+		"input":"check status",
+		"tools":[{"type":"function","name":"exec_cmd","parameters":{"type":"object"}}]
+	}`), "")
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, rec1.Code)
+
+	upstream.resp = &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid-tool-context-partial-2"}},
+		Body: io.NopCloser(strings.NewReader(`{
+			"id":"chatcmpl_context_partial_done",
+			"model":"deepseek-ai/deepseek-v4-pro",
+			"choices":[{"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}],
+			"usage":{"prompt_tokens":7,"completion_tokens":2,"total_tokens":9}
+		}`)),
+	}
+	rec2 := httptest.NewRecorder()
+	c2, _ := gin.CreateTestContext(rec2)
+	c2.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	_, err = svc.ForwardResponsesPassthrough(context.Background(), c2, account, []byte(`{
+		"model":"deepseek-ai/deepseek-v4-pro",
+		"previous_response_id":"resp-chatcmpl_context_partial_source",
+		"input":[{"type":"function_call_output","call_id":"call_b","output":"ok"}]
+	}`), "")
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, rec2.Code)
+
+	require.Equal(t, "assistant", gjson.GetBytes(upstream.lastBody, "messages.0.role").String())
+	require.Equal(t, int64(1), gjson.GetBytes(upstream.lastBody, "messages.0.tool_calls.#").Int())
+	require.Equal(t, "call_b", gjson.GetBytes(upstream.lastBody, "messages.0.tool_calls.0.id").String())
+	require.Equal(t, "tool", gjson.GetBytes(upstream.lastBody, "messages.1.role").String())
+	require.Equal(t, "call_b", gjson.GetBytes(upstream.lastBody, "messages.1.tool_call_id").String())
+	require.Equal(t, int64(2), gjson.GetBytes(upstream.lastBody, "messages.#").Int())
 }
 
 func TestOpenAIResponsesPassthroughToolContextPrepend(t *testing.T) {

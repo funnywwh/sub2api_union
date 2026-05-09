@@ -684,6 +684,10 @@ func (s *OpenAIGatewayService) forwardChatCompletionsPassthrough(
 			return nil, fmt.Errorf("rewrite model in body: %w", err)
 		}
 	}
+	forwardBody, err = normalizeChatCompletionsPassthroughBody(forwardBody)
+	if err != nil {
+		return nil, fmt.Errorf("normalize chat completions tool messages: %w", err)
+	}
 
 	// 3. Get access token (API key for apikey-type accounts)
 	token, _, err := s.GetAccessToken(ctx, account)
@@ -1427,6 +1431,7 @@ func (s *OpenAIGatewayService) ForwardResponsesPassthrough(
 			messages = append(contextMessages, messages...)
 		}
 	}
+	messages = normalizeChatToolCallSequences(messages)
 
 	chatReq := apicompat.ChatCompletionsRequest{
 		Model:    respReq.Model,
@@ -1916,6 +1921,177 @@ func rawMessageString(s string) json.RawMessage {
 	return json.RawMessage(b)
 }
 
+func appendResponsesFunctionCallMessage(messages []apicompat.ChatMessage, item apicompat.ResponsesInputItem) []apicompat.ChatMessage {
+	toolCall := apicompat.ChatToolCall{
+		ID:   strings.TrimSpace(item.CallID),
+		Type: "function",
+		Function: apicompat.ChatFunctionCall{
+			Name:      strings.TrimSpace(item.Name),
+			Arguments: normalizeToolCallArguments(item.Arguments),
+		},
+	}
+
+	last := len(messages) - 1
+	if last >= 0 && messages[last].Role == "assistant" {
+		messages[last].ToolCalls = append(messages[last].ToolCalls, toolCall)
+		return messages
+	}
+
+	return append(messages, apicompat.ChatMessage{
+		Role:      "assistant",
+		ToolCalls: []apicompat.ChatToolCall{toolCall},
+	})
+}
+
+func normalizeChatCompletionsPassthroughBody(body []byte) ([]byte, error) {
+	messagesResult := gjson.GetBytes(body, "messages")
+	if !messagesResult.Exists() || !messagesResult.IsArray() {
+		return body, nil
+	}
+	var messages []apicompat.ChatMessage
+	if err := json.Unmarshal([]byte(messagesResult.Raw), &messages); err != nil {
+		return nil, err
+	}
+	normalized, changed := normalizeChatToolCallSequencesWithChanged(messages)
+	if !changed {
+		return body, nil
+	}
+	messagesJSON, err := json.Marshal(normalized)
+	if err != nil {
+		return nil, err
+	}
+	return sjson.SetRawBytes(body, "messages", messagesJSON)
+}
+
+func normalizeChatToolCallSequences(messages []apicompat.ChatMessage) []apicompat.ChatMessage {
+	normalized, _ := normalizeChatToolCallSequencesWithChanged(messages)
+	return normalized
+}
+
+func normalizeChatToolCallSequencesWithChanged(messages []apicompat.ChatMessage) ([]apicompat.ChatMessage, bool) {
+	if len(messages) == 0 {
+		return messages, false
+	}
+
+	changed := false
+	out := make([]apicompat.ChatMessage, 0, len(messages))
+	for i := 0; i < len(messages); i++ {
+		message := messages[i]
+		if message.Role == "assistant" && len(message.ToolCalls) > 0 {
+			next := i + 1
+			var toolMessages []apicompat.ChatMessage
+			for next < len(messages) && messages[next].Role == "tool" {
+				toolMessages = append(toolMessages, messages[next])
+				next++
+			}
+
+			firstToolMessageIndexByID := make(map[string]int)
+			for idx, toolMessage := range toolMessages {
+				toolCallID := strings.TrimSpace(toolMessage.ToolCallID)
+				if toolCallID == "" {
+					changed = true
+					continue
+				}
+				if _, exists := firstToolMessageIndexByID[toolCallID]; exists {
+					changed = true
+					continue
+				}
+				firstToolMessageIndexByID[toolCallID] = idx
+			}
+
+			filteredToolCalls := make([]apicompat.ChatToolCall, 0, len(message.ToolCalls))
+			keptToolCallIDs := make([]string, 0, len(message.ToolCalls))
+			seenToolCallIDs := make(map[string]struct{})
+			for _, toolCall := range message.ToolCalls {
+				toolCallID := strings.TrimSpace(toolCall.ID)
+				if toolCallID == "" {
+					changed = true
+					continue
+				}
+				if _, duplicate := seenToolCallIDs[toolCallID]; duplicate {
+					changed = true
+					continue
+				}
+				seenToolCallIDs[toolCallID] = struct{}{}
+				if _, ok := firstToolMessageIndexByID[toolCallID]; !ok {
+					changed = true
+					continue
+				}
+				filteredToolCalls = append(filteredToolCalls, toolCall)
+				keptToolCallIDs = append(keptToolCallIDs, toolCallID)
+			}
+
+			message.ToolCalls = filteredToolCalls
+			if len(message.ToolCalls) > 0 || chatMessageHasRenderablePayload(message) {
+				out = append(out, message)
+			} else {
+				changed = true
+			}
+
+			emittedToolMessageIndices := make(map[int]struct{}, len(keptToolCallIDs))
+			for expectedIdx, toolCallID := range keptToolCallIDs {
+				toolMessageIdx := firstToolMessageIndexByID[toolCallID]
+				if toolMessageIdx != expectedIdx {
+					changed = true
+				}
+				out = append(out, toolMessages[toolMessageIdx])
+				emittedToolMessageIndices[toolMessageIdx] = struct{}{}
+			}
+
+			for idx, toolMessage := range toolMessages {
+				if _, emitted := emittedToolMessageIndices[idx]; emitted {
+					continue
+				}
+				changed = true
+				out = append(out, downgradeOrphanToolMessage(toolMessage))
+			}
+			i = next - 1
+			continue
+		}
+
+		if message.Role == "tool" {
+			changed = true
+			out = append(out, downgradeOrphanToolMessage(message))
+			continue
+		}
+		out = append(out, message)
+	}
+	return out, changed
+}
+
+func chatMessageHasRenderablePayload(message apicompat.ChatMessage) bool {
+	content := bytes.TrimSpace(message.Content)
+	if len(content) > 0 && !bytes.Equal(content, []byte("null")) && !bytes.Equal(content, []byte(`""`)) {
+		return true
+	}
+	return strings.TrimSpace(message.ReasoningContent) != "" || message.FunctionCall != nil
+}
+
+func downgradeOrphanToolMessage(message apicompat.ChatMessage) apicompat.ChatMessage {
+	content := chatMessageContentAsText(message.Content)
+	if strings.TrimSpace(content) == "" {
+		content = "(empty)"
+	}
+	if toolCallID := strings.TrimSpace(message.ToolCallID); toolCallID != "" {
+		content = "Tool result for " + toolCallID + ":\n" + content
+	} else {
+		content = "Tool result:\n" + content
+	}
+	return apicompat.ChatMessage{Role: "user", Content: rawMessageString(content)}
+}
+
+func chatMessageContentAsText(raw json.RawMessage) string {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(trimmed, &s); err == nil {
+		return s
+	}
+	return string(trimmed)
+}
+
 // convertResponsesInputToMessages converts a Responses API request's input field
 // into Chat Completions messages format.
 func convertResponsesInputToMessages(respReq apicompat.ResponsesRequest) ([]apicompat.ChatMessage, error) {
@@ -1953,17 +2129,7 @@ func convertResponsesInputToMessages(respReq apicompat.ResponsesRequest) ([]apic
 	for _, item := range items {
 		switch {
 		case item.Type == "function_call":
-			messages = append(messages, apicompat.ChatMessage{
-				Role: "assistant",
-				ToolCalls: []apicompat.ChatToolCall{{
-					ID:   item.CallID,
-					Type: "function",
-					Function: apicompat.ChatFunctionCall{
-						Name:      item.Name,
-						Arguments: normalizeToolCallArguments(item.Arguments),
-					},
-				}},
-			})
+			messages = appendResponsesFunctionCallMessage(messages, item)
 		case item.Type == "function_call_output":
 			messages = append(messages, apicompat.ChatMessage{
 				Role:       "tool",
