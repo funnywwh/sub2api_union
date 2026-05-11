@@ -96,6 +96,7 @@ security:
       - "open.bigmodel.cn"
       - "api.minimaxi.com"
       - "generativelanguage.googleapis.com"
+      - "happyhorse.app"
       - "cloudcode-pa.googleapis.com"
       - "*.openai.azure.com"
     # Allowed hosts for pricing data download

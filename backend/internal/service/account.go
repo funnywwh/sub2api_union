@@ -966,6 +966,10 @@ func (a *Account) IsOpenAI() bool {
 	return a.Platform == PlatformOpenAI
 }
 
+func (a *Account) IsHappyHorse() bool {
+	return a.Platform == PlatformHappyHorse
+}
+
 func (a *Account) IsAnthropic() bool {
 	return a.Platform == PlatformAnthropic
 }
@@ -989,6 +993,24 @@ func (a *Account) GetOpenAIBaseURL() string {
 		}
 	}
 	return "https://api.openai.com"
+}
+
+func (a *Account) GetHappyHorseBaseURL() string {
+	if !a.IsHappyHorse() {
+		return ""
+	}
+	baseURL := strings.TrimSpace(a.GetCredential("base_url"))
+	if baseURL != "" {
+		return baseURL
+	}
+	return HappyHorseDefaultBaseURL
+}
+
+func (a *Account) GetHappyHorseAPIKey() string {
+	if !a.IsHappyHorse() || a.Type != AccountTypeAPIKey {
+		return ""
+	}
+	return a.GetCredential("api_key")
 }
 
 // IsOpenAIOfficial returns true if the account targets OpenAI's official API.

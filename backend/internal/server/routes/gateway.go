@@ -30,6 +30,7 @@ func RegisterGatewayRoutes(
 	// 未分组 Key 拦截中间件（按协议格式区分错误响应）
 	requireGroupAnthropic := middleware.RequireGroupAssignment(settingService, middleware.AnthropicErrorWriter)
 	requireGroupGoogle := middleware.RequireGroupAssignment(settingService, middleware.GoogleErrorWriter)
+	requireGroupHappyHorse := middleware.RequireGroupAssignment(settingService, middleware.AnthropicErrorWriter)
 
 	// API网关（Claude API兼容）
 	gateway := r.Group("/v1")
@@ -179,6 +180,25 @@ func RegisterGatewayRoutes(
 		}
 		h.OpenAIGateway.Images(c)
 	})
+
+	// HappyHorse video generation API（独立视频平台）
+	happyHorse := r.Group("/v1/videos")
+	happyHorse.Use(bodyLimit)
+	happyHorse.Use(clientRequestID)
+	happyHorse.Use(opsErrorLogger)
+	happyHorse.Use(endpointNorm)
+	happyHorse.Use(gin.HandlerFunc(apiKeyAuth))
+	happyHorse.Use(requireGroupHappyHorse)
+	{
+		happyHorse.POST("/generations", h.HappyHorseGateway.Generate)
+		happyHorse.GET("/status", h.HappyHorseGateway.Status)
+		happyHorse.GET("/status/:task_id", h.HappyHorseGateway.Status)
+	}
+
+	// HappyHorse video generation API（不带 v1 前缀的别名）
+	r.POST("/videos/generations", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupHappyHorse, h.HappyHorseGateway.Generate)
+	r.GET("/videos/status", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupHappyHorse, h.HappyHorseGateway.Status)
+	r.GET("/videos/status/:task_id", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupHappyHorse, h.HappyHorseGateway.Status)
 
 	// Antigravity 模型列表
 	r.GET("/antigravity/models", gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, h.Gateway.AntigravityModels)

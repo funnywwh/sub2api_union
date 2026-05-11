@@ -45,6 +45,11 @@ const geminiModels = [
   'gemini-3-pro-preview'
 ]
 
+// HappyHorse
+const happyHorseModels = [
+  'happyhorse-1.0/video'
+]
+
 // Antigravity 官方支持的模型（精确匹配）
 // 基于官方 API 返回的模型列表，只支持 Claude 4.5+ 和 Gemini 2.5+
 const antigravityModels = [
@@ -206,6 +211,7 @@ const allModelsList: string[] = [
   ...openaiModels,
   ...claudeModels,
   ...geminiModels,
+  ...happyHorseModels,
   ...zhipuModels,
   ...qwenModels,
   ...deepseekModels,
@@ -263,6 +269,10 @@ const geminiPresetMappings = [
   { label: '2.5 Image', from: 'gemini-2.5-flash-image', to: 'gemini-2.5-flash-image', color: 'bg-sky-100 text-sky-700 hover:bg-sky-200 dark:bg-sky-900/30 dark:text-sky-400' },
   { label: '2.5 Pro', from: 'gemini-2.5-pro', to: 'gemini-2.5-pro', color: 'bg-purple-100 text-purple-700 hover:bg-purple-200 dark:bg-purple-900/30 dark:text-purple-400' },
   { label: '3.1 Image', from: 'gemini-3.1-flash-image', to: 'gemini-3.1-flash-image', color: 'bg-sky-100 text-sky-700 hover:bg-sky-200 dark:bg-sky-900/30 dark:text-sky-400' }
+]
+
+const happyHorsePresetMappings = [
+  { label: 'HappyHorse Video', from: 'happyhorse-1.0/video', to: 'happyhorse-1.0/video', color: 'bg-pink-100 text-pink-700 hover:bg-pink-200 dark:bg-pink-900/30 dark:text-pink-400' }
 ]
 
 // Antigravity 预设映射（支持通配符）
@@ -353,6 +363,7 @@ export function getModelsByPlatform(platform: string): string[] {
     case 'anthropic':
     case 'claude': return claudeModels
     case 'gemini': return geminiModels
+    case 'happyhorse': return happyHorseModels
     case 'antigravity': return antigravityModels
     case 'zhipu': return zhipuModels
     case 'qwen': return qwenModels
@@ -377,6 +388,7 @@ export function getModelsByPlatform(platform: string): string[] {
 export function getPresetMappingsByPlatform(platform: string) {
   if (platform === 'openai') return openaiPresetMappings
   if (platform === 'gemini') return geminiPresetMappings
+  if (platform === 'happyhorse') return happyHorsePresetMappings
   if (platform === 'antigravity') return antigravityPresetMappings
   if (platform === 'bedrock') return bedrockPresetMappings
   return anthropicPresetMappings

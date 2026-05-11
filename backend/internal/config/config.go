@@ -1408,6 +1408,7 @@ func setDefaults() {
 		"open.bigmodel.cn",
 		"api.minimaxi.com",
 		"generativelanguage.googleapis.com",
+		"happyhorse.app",
 		"cloudcode-pa.googleapis.com",
 		"*.openai.azure.com",
 	})

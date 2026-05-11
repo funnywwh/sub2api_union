@@ -2027,6 +2027,7 @@ export default {
         openai: 'OpenAI',
         gemini: 'Gemini',
         antigravity: 'Antigravity',
+        happyhorse: 'HappyHorse',
       },
       deleteConfirm:
         "Are you sure you want to delete '{name}'? All associated API keys will no longer belong to any group.",
@@ -2630,6 +2631,7 @@ export default {
         openai: 'OpenAI',
         gemini: 'Gemini',
         antigravity: 'Antigravity',
+        happyhorse: 'HappyHorse',
       },
       types: {
         oauth: 'OAuth',
@@ -2877,6 +2879,10 @@ export default {
       apiKeyRequired: 'API Key *',
       apiKeyPlaceholder: 'sk-ant-api03-...',
       apiKeyHint: 'Your Claude Console API Key',
+      happyhorse: {
+        baseUrlHint: 'Leave default for official HappyHorse API',
+        apiKeyHint: 'Your HappyHorse API Key'
+      },
       // OpenAI specific hints
       openai: {
         baseUrlHint: 'Leave default for official OpenAI API',

@@ -8094,6 +8094,7 @@ func (s *GatewayService) calculateImageCost(
 			GroupID:        &gid,
 			Tokens:         tokens,
 			RequestCount:   1,
+			SizeTier:       result.ImageSize,
 			RateMultiplier: multiplier,
 			Resolver:       s.resolver,
 			Resolved:       resolved,
