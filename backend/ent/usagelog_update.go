@@ -88,6 +88,26 @@ func (_u *UsageLogUpdate) SetNillableRequestID(v *string) *UsageLogUpdate {
 	return _u
 }
 
+// SetConversationID sets the "conversation_id" field.
+func (_u *UsageLogUpdate) SetConversationID(v string) *UsageLogUpdate {
+	_u.mutation.SetConversationID(v)
+	return _u
+}
+
+// SetNillableConversationID sets the "conversation_id" field if the given value is not nil.
+func (_u *UsageLogUpdate) SetNillableConversationID(v *string) *UsageLogUpdate {
+	if v != nil {
+		_u.SetConversationID(*v)
+	}
+	return _u
+}
+
+// ClearConversationID clears the value of the "conversation_id" field.
+func (_u *UsageLogUpdate) ClearConversationID() *UsageLogUpdate {
+	_u.mutation.ClearConversationID()
+	return _u
+}
+
 // SetModel sets the "model" field.
 func (_u *UsageLogUpdate) SetModel(v string) *UsageLogUpdate {
 	_u.mutation.SetModel(v)
@@ -847,6 +867,11 @@ func (_u *UsageLogUpdate) check() error {
 			return &ValidationError{Name: "request_id", err: fmt.Errorf(`ent: validator failed for field "UsageLog.request_id": %w`, err)}
 		}
 	}
+	if v, ok := _u.mutation.ConversationID(); ok {
+		if err := usagelog.ConversationIDValidator(v); err != nil {
+			return &ValidationError{Name: "conversation_id", err: fmt.Errorf(`ent: validator failed for field "UsageLog.conversation_id": %w`, err)}
+		}
+	}
 	if v, ok := _u.mutation.Model(); ok {
 		if err := usagelog.ModelValidator(v); err != nil {
 			return &ValidationError{Name: "model", err: fmt.Errorf(`ent: validator failed for field "UsageLog.model": %w`, err)}
@@ -918,6 +943,12 @@ func (_u *UsageLogUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	}
 	if value, ok := _u.mutation.RequestID(); ok {
 		_spec.SetField(usagelog.FieldRequestID, field.TypeString, value)
+	}
+	if value, ok := _u.mutation.ConversationID(); ok {
+		_spec.SetField(usagelog.FieldConversationID, field.TypeString, value)
+	}
+	if _u.mutation.ConversationIDCleared() {
+		_spec.ClearField(usagelog.FieldConversationID, field.TypeString)
 	}
 	if value, ok := _u.mutation.Model(); ok {
 		_spec.SetField(usagelog.FieldModel, field.TypeString, value)
@@ -1320,6 +1351,26 @@ func (_u *UsageLogUpdateOne) SetNillableRequestID(v *string) *UsageLogUpdateOne 
 	if v != nil {
 		_u.SetRequestID(*v)
 	}
+	return _u
+}
+
+// SetConversationID sets the "conversation_id" field.
+func (_u *UsageLogUpdateOne) SetConversationID(v string) *UsageLogUpdateOne {
+	_u.mutation.SetConversationID(v)
+	return _u
+}
+
+// SetNillableConversationID sets the "conversation_id" field if the given value is not nil.
+func (_u *UsageLogUpdateOne) SetNillableConversationID(v *string) *UsageLogUpdateOne {
+	if v != nil {
+		_u.SetConversationID(*v)
+	}
+	return _u
+}
+
+// ClearConversationID clears the value of the "conversation_id" field.
+func (_u *UsageLogUpdateOne) ClearConversationID() *UsageLogUpdateOne {
+	_u.mutation.ClearConversationID()
 	return _u
 }
 
@@ -2095,6 +2146,11 @@ func (_u *UsageLogUpdateOne) check() error {
 			return &ValidationError{Name: "request_id", err: fmt.Errorf(`ent: validator failed for field "UsageLog.request_id": %w`, err)}
 		}
 	}
+	if v, ok := _u.mutation.ConversationID(); ok {
+		if err := usagelog.ConversationIDValidator(v); err != nil {
+			return &ValidationError{Name: "conversation_id", err: fmt.Errorf(`ent: validator failed for field "UsageLog.conversation_id": %w`, err)}
+		}
+	}
 	if v, ok := _u.mutation.Model(); ok {
 		if err := usagelog.ModelValidator(v); err != nil {
 			return &ValidationError{Name: "model", err: fmt.Errorf(`ent: validator failed for field "UsageLog.model": %w`, err)}
@@ -2183,6 +2239,12 @@ func (_u *UsageLogUpdateOne) sqlSave(ctx context.Context) (_node *UsageLog, err 
 	}
 	if value, ok := _u.mutation.RequestID(); ok {
 		_spec.SetField(usagelog.FieldRequestID, field.TypeString, value)
+	}
+	if value, ok := _u.mutation.ConversationID(); ok {
+		_spec.SetField(usagelog.FieldConversationID, field.TypeString, value)
+	}
+	if _u.mutation.ConversationIDCleared() {
+		_spec.ClearField(usagelog.FieldConversationID, field.TypeString)
 	}
 	if value, ok := _u.mutation.Model(); ok {
 		_spec.SetField(usagelog.FieldModel, field.TypeString, value)

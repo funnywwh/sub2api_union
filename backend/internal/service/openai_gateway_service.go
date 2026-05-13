@@ -4947,6 +4947,7 @@ type OpenAIRecordUsageInput struct {
 	User               *User
 	Account            *Account
 	Subscription       *UserSubscription
+	ConversationID     string
 	InboundEndpoint    string
 	UpstreamEndpoint   string
 	UserAgent          string // 请求的 User-Agent
@@ -5049,6 +5050,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		APIKeyID:            apiKey.ID,
 		AccountID:           account.ID,
 		RequestID:           requestID,
+		ConversationID:      optionalTrimmedStringPtr(input.ConversationID),
 		Model:               result.Model,
 		RequestedModel:      requestedModel,
 		UpstreamModel:       optionalNonEqualStringPtr(result.UpstreamModel, result.Model),

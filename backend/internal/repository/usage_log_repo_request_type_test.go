@@ -45,6 +45,7 @@ func TestUsageLogRepositoryCreateSyncRequestTypeAndLegacyFields(t *testing.T) {
 			log.APIKeyID,
 			log.AccountID,
 			log.RequestID,
+			sqlmock.AnyArg(), // conversation_id
 			log.Model,
 			log.RequestedModel,
 			sqlmock.AnyArg(), // upstream_model
@@ -124,6 +125,7 @@ func TestUsageLogRepositoryCreate_PersistsServiceTier(t *testing.T) {
 			log.APIKeyID,
 			log.AccountID,
 			log.RequestID,
+			sqlmock.AnyArg(), // conversation_id
 			log.Model,
 			log.RequestedModel,
 			sqlmock.AnyArg(),
@@ -189,10 +191,10 @@ func TestBuildUsageLogBestEffortInsertQuery_IncludesRequestedModelColumn(t *test
 	query, args := buildUsageLogBestEffortInsertQuery([]usageLogInsertPrepared{prepared})
 
 	require.Contains(t, query, "INSERT INTO usage_logs (")
-	require.Contains(t, query, "\n\t\t\tmodel,\n\t\t\trequested_model,\n\t\t\tupstream_model,")
-	require.Contains(t, query, "\n\t\t\trequest_id,\n\t\t\tmodel,\n\t\t\trequested_model,\n\t\t\tupstream_model,")
+	require.Contains(t, query, "\n\t\t\tconversation_id,\n\t\t\tmodel,\n\t\t\trequested_model,\n\t\t\tupstream_model,")
+	require.Contains(t, query, "\n\t\t\trequest_id,\n\t\t\tconversation_id,\n\t\t\tmodel,\n\t\t\trequested_model,\n\t\t\tupstream_model,")
 	require.Len(t, args, len(prepared.args))
-	require.Equal(t, prepared.args[5], args[5])
+	require.Equal(t, prepared.args[6], args[6])
 }
 
 func TestExecUsageLogInsertNoResult_PersistsRequestedModel(t *testing.T) {
@@ -592,6 +594,7 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			int64(20), // api_key_id
 			int64(30), // account_id
 			sql.NullString{Valid: true, String: "req-1"},
+			sql.NullString{},
 			"gpt-5", // model
 			sql.NullString{Valid: true, String: "gpt-5"}, // requested_model
 			sql.NullString{},  // upstream_model
@@ -651,6 +654,7 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			int64(21),
 			int64(31),
 			sql.NullString{Valid: true, String: "req-2"},
+			sql.NullString{},
 			"gpt-5",
 			sql.NullString{Valid: true, String: "gpt-5"},
 			sql.NullString{},
@@ -699,6 +703,7 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			int64(22),
 			int64(32),
 			sql.NullString{Valid: true, String: "req-3"},
+			sql.NullString{},
 			"gpt-5.4",
 			sql.NullString{Valid: true, String: "gpt-5.4"},
 			sql.NullString{},
