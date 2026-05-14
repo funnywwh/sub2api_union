@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"fmt"
+	"regexp"
 	"reflect"
 	"testing"
 	"time"
@@ -270,6 +271,30 @@ func TestUsageLogRepositoryListWithFiltersRequestTypePriority(t *testing.T) {
 	require.Empty(t, logs)
 	require.NotNil(t, page)
 	require.Equal(t, int64(0), page.Total)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestUsageLogRepositoryListWithFiltersTraceSearchUsesExactTotal(t *testing.T) {
+	db, mock := newSQLMock(t)
+	repo := &usageLogRepository{sql: db}
+
+	filters := usagestats.UsageLogFilters{
+		RequestID:      "req-trace",
+		ConversationID: "session-trace",
+	}
+
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM usage_logs WHERE COALESCE(request_id, '') ILIKE $1 AND COALESCE(conversation_id, '') ILIKE $2")).
+		WithArgs("%req-trace%", "%session-trace%").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(int64(1)))
+	mock.ExpectQuery("SELECT .* FROM usage_logs WHERE COALESCE\\(request_id, ''\\) ILIKE \\$1 AND COALESCE\\(conversation_id, ''\\) ILIKE \\$2 ORDER BY id DESC LIMIT \\$3 OFFSET \\$4").
+		WithArgs("%req-trace%", "%session-trace%", 20, 0).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+
+	logs, page, err := repo.ListWithFilters(context.Background(), pagination.PaginationParams{Page: 1, PageSize: 20}, filters)
+	require.NoError(t, err)
+	require.Empty(t, logs)
+	require.NotNil(t, page)
+	require.Equal(t, int64(1), page.Total)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 

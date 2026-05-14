@@ -196,6 +196,7 @@ let modelStatsReqSeq = 0
 let userRankingReqSeq = 0
 const exportProgress = reactive({ show: false, progress: 0, current: 0, total: 0, estimatedTime: '' })
 const cleanupDialogVisible = ref(false)
+const lastAnalyticsFilterKey = ref('')
 // Balance history modal state
 const showBalanceHistoryModal = ref(false)
 const balanceHistoryUser = ref<AdminUser | null>(null)
@@ -297,19 +298,39 @@ const onDateRangeChange = (range: { startDate: string; endDate: string; preset: 
   applyFilters()
 }
 
+const getResolvedLegacyStream = () => {
+  const requestType = filters.value.request_type
+  const legacyStream = requestType ? requestTypeToLegacyStream(requestType) : filters.value.stream
+  return legacyStream === null ? undefined : legacyStream
+}
+
+const buildUsageStatsParams = () => ({
+  user_id: filters.value.user_id,
+  api_key_id: filters.value.api_key_id,
+  account_id: filters.value.account_id,
+  group_id: filters.value.group_id,
+  model: filters.value.model,
+  request_type: filters.value.request_type,
+  stream: getResolvedLegacyStream(),
+  billing_type: filters.value.billing_type ?? undefined,
+  billing_mode: filters.value.billing_mode,
+  start_date: filters.value.start_date || startDate.value,
+  end_date: filters.value.end_date || endDate.value,
+})
+
+const buildAnalyticsFilterKey = () => JSON.stringify(buildUsageStatsParams())
+
 const buildUsageListParams = (
   page: number,
   pageSize: number,
   exactTotal: boolean
 ): AdminUsageQueryParams => {
-  const requestType = filters.value.request_type
-  const legacyStream = requestType ? requestTypeToLegacyStream(requestType) : filters.value.stream
   return {
     page,
     page_size: pageSize,
     exact_total: exactTotal,
     ...filters.value,
-    stream: legacyStream === null ? undefined : legacyStream,
+    stream: getResolvedLegacyStream(),
     sort_by: sortState.sort_by,
     sort_order: sortState.sort_order
   }
@@ -329,9 +350,7 @@ const loadStats = async () => {
   const seq = ++statsReqSeq
   endpointStatsLoading.value = true
   try {
-    const requestType = filters.value.request_type
-    const legacyStream = requestType ? requestTypeToLegacyStream(requestType) : filters.value.stream
-    const s = await adminAPI.usage.getStats({ ...filters.value, stream: legacyStream === null ? undefined : legacyStream })
+    const s = await adminAPI.usage.getStats(buildUsageStatsParams())
     if (seq !== statsReqSeq) return
     usageStats.value = s
     inboundEndpointStats.value = s.endpoints || []
@@ -477,14 +496,20 @@ const loadChartData = async () => {
 }
 const applyFilters = () => {
   pagination.page = 1
-  resetModelStatsCache()
   loadLogs()
+  const nextAnalyticsFilterKey = buildAnalyticsFilterKey()
+  if (nextAnalyticsFilterKey === lastAnalyticsFilterKey.value) {
+    return
+  }
+  lastAnalyticsFilterKey.value = nextAnalyticsFilterKey
+  resetModelStatsCache()
   loadStats()
   loadModelStats(modelDistributionSource.value, true)
   loadChartData()
   loadUserRanking()
 }
 const refreshData = () => {
+  lastAnalyticsFilterKey.value = buildAnalyticsFilterKey()
   resetModelStatsCache()
   loadLogs()
   loadStats()
@@ -660,6 +685,7 @@ const handleColumnClickOutside = (event: MouseEvent) => {
 
 onMounted(() => {
   applyRouteQueryFilters()
+  lastAnalyticsFilterKey.value = buildAnalyticsFilterKey()
   loadLogs()
   loadStats()
   loadModelStats(modelDistributionSource.value, true)

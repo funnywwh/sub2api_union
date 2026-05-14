@@ -649,6 +649,43 @@ func (s *UsageLogRepoSuite) TestListWithFilters() {
 	s.Require().Equal(int64(1), page.Total)
 }
 
+func (s *UsageLogRepoSuite) TestListWithFiltersTraceSearch() {
+	user := mustCreateUser(s.T(), s.client, &service.User{Email: "trace-filters@test.com"})
+	apiKey := mustCreateApiKey(s.T(), s.client, &service.APIKey{UserID: user.ID, Key: "sk-trace-filters", Name: "k"})
+	account := mustCreateAccount(s.T(), s.client, &service.Account{Name: "acc-trace-filters"})
+
+	conversationID := "session-abc-123"
+	matchingLog := &service.UsageLog{
+		UserID:         user.ID,
+		APIKeyID:       apiKey.ID,
+		AccountID:      account.ID,
+		RequestID:      "req-admin-trace-1",
+		ConversationID: &conversationID,
+		Model:          "claude-3",
+		InputTokens:    10,
+		OutputTokens:   20,
+		TotalCost:      0.5,
+		ActualCost:     0.5,
+		CreatedAt:      time.Now(),
+	}
+	_, err := s.repo.Create(s.ctx, matchingLog)
+	s.Require().NoError(err)
+
+	s.createUsageLog(user, apiKey, account, 5, 6, 0.2, time.Now())
+
+	filters := usagestats.UsageLogFilters{
+		RequestID:      "trace-1",
+		ConversationID: "abc-123",
+	}
+	logs, page, err := s.repo.ListWithFilters(s.ctx, pagination.PaginationParams{Page: 1, PageSize: 10}, filters)
+	s.Require().NoError(err, "ListWithFilters trace search")
+	s.Require().Len(logs, 1)
+	s.Require().Equal(matchingLog.RequestID, logs[0].RequestID)
+	s.Require().NotNil(logs[0].ConversationID)
+	s.Require().Equal(conversationID, *logs[0].ConversationID)
+	s.Require().Equal(int64(1), page.Total)
+}
+
 // --- GetDashboardStats ---
 
 func (s *UsageLogRepoSuite) TestDashboardStats_TodayTotalsAndPerformance() {

@@ -121,6 +121,28 @@
           </div>
         </div>
 
+        <div v-if="showTraceFilters" class="w-full sm:w-auto sm:min-w-[220px]">
+          <label class="input-label">{{ t('admin.usage.conversationId') }}</label>
+          <input
+            v-model.trim="filters.conversation_id"
+            type="text"
+            class="input"
+            :placeholder="t('admin.usage.searchConversationPlaceholder')"
+            @input="emitChange"
+          />
+        </div>
+
+        <div v-if="showTraceFilters" class="w-full sm:w-auto sm:min-w-[220px]">
+          <label class="input-label">{{ t('admin.usage.requestId') }}</label>
+          <input
+            v-model.trim="filters.request_id"
+            type="text"
+            class="input"
+            :placeholder="t('admin.usage.searchRequestPlaceholder')"
+            @input="emitChange"
+          />
+        </div>
+
         <!-- Request Type Filter -->
         <div class="w-full sm:w-auto sm:min-w-[180px]">
           <label class="input-label">{{ t('usage.type') }}</label>
@@ -182,10 +204,12 @@ interface Props {
   startDate: string
   endDate: string
   showActions?: boolean
+  showTraceFilters?: boolean
 }
 
 const props = withDefaults(defineProps<Props>(), {
-  showActions: true
+  showActions: true,
+  showTraceFilters: true
 })
 const emit = defineEmits([
   'update:modelValue',

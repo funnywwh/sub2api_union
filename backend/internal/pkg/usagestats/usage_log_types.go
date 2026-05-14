@@ -244,6 +244,9 @@ type UsageLogFilters struct {
 	APIKeyID    int64
 	AccountID   int64
 	GroupID     int64
+	RequestID   string
+	// ConversationID stores the client-visible session/conversation identifier for admin tracing.
+	ConversationID string
 	Model       string
 	RequestType *int16
 	Stream      *bool

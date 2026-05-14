@@ -2648,8 +2648,8 @@ type UsageLogFilters = usagestats.UsageLogFilters
 
 // ListWithFilters lists usage logs with optional filters (for admin)
 func (r *usageLogRepository) ListWithFilters(ctx context.Context, params pagination.PaginationParams, filters UsageLogFilters) ([]service.UsageLog, *pagination.PaginationResult, error) {
-	conditions := make([]string, 0, 9)
-	args := make([]any, 0, 9)
+	conditions := make([]string, 0, 11)
+	args := make([]any, 0, 11)
 
 	if filters.UserID > 0 {
 		conditions = append(conditions, fmt.Sprintf("user_id = $%d", len(args)+1))
@@ -2667,6 +2667,7 @@ func (r *usageLogRepository) ListWithFilters(ctx context.Context, params paginat
 		conditions = append(conditions, fmt.Sprintf("group_id = $%d", len(args)+1))
 		args = append(args, filters.GroupID)
 	}
+	conditions, args = appendUsageLogTraceWhereConditions(conditions, args, filters.RequestID, filters.ConversationID)
 	conditions, args = appendRawUsageLogModelWhereCondition(conditions, args, filters.Model)
 	conditions, args = appendRequestTypeOrStreamWhereCondition(conditions, args, filters.RequestType, filters.Stream)
 	if filters.BillingType != nil {
@@ -2712,7 +2713,23 @@ func shouldUseFastUsageLogTotal(filters UsageLogFilters) bool {
 		return false
 	}
 	// 强选择过滤下记录集通常较小，保留精确总数。
-	return filters.UserID == 0 && filters.APIKeyID == 0 && filters.AccountID == 0
+	return filters.UserID == 0 &&
+		filters.APIKeyID == 0 &&
+		filters.AccountID == 0 &&
+		strings.TrimSpace(filters.RequestID) == "" &&
+		strings.TrimSpace(filters.ConversationID) == ""
+}
+
+func appendUsageLogTraceWhereConditions(conditions []string, args []any, requestID, conversationID string) ([]string, []any) {
+	if requestID = strings.TrimSpace(requestID); requestID != "" {
+		conditions = append(conditions, fmt.Sprintf("COALESCE(request_id, '') ILIKE $%d", len(args)+1))
+		args = append(args, "%"+escapeLike(requestID)+"%")
+	}
+	if conversationID = strings.TrimSpace(conversationID); conversationID != "" {
+		conditions = append(conditions, fmt.Sprintf("COALESCE(conversation_id, '') ILIKE $%d", len(args)+1))
+		args = append(args, "%"+escapeLike(conversationID)+"%")
+	}
+	return conditions, args
 }
 
 // UsageStats represents usage statistics

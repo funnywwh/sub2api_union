@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
+import { defineComponent } from 'vue'
 
 import UsageView from '../UsageView.vue'
 
@@ -87,7 +88,35 @@ vi.mock('vue-router', () => ({
 }))
 
 const AppLayoutStub = { template: '<div><slot /></div>' }
-const UsageFiltersStub = { template: '<div><slot name="after-reset" /></div>' }
+const UsageFiltersStub = defineComponent({
+  props: {
+    modelValue: {
+      type: Object,
+      default: () => ({})
+    }
+  },
+  emits: ['update:modelValue', 'change'],
+  setup(props, { emit }) {
+    const emitTraceFilter = () => {
+      emit('update:modelValue', {
+        ...props.modelValue,
+        request_id: 'req-trace-1',
+        conversation_id: 'session-trace-1',
+      })
+      emit('change')
+    }
+
+    return {
+      emitTraceFilter,
+    }
+  },
+  template: `
+    <div>
+      <button class="trace-filter" @click="emitTraceFilter">trace</button>
+      <slot name="after-reset" />
+    </div>
+  `
+})
 const ModelDistributionChartStub = {
   props: ['metric'],
   emits: ['update:metric'],
@@ -216,6 +245,52 @@ describe('admin UsageView distribution metric toggles', () => {
 
     expect(modelChart.find('.metric').text()).toBe('actual_cost')
     expect(groupChart.find('.metric').text()).toBe('actual_cost')
+    expect(getSnapshotV2).toHaveBeenCalledTimes(1)
+    expect(getUserBreakdown).toHaveBeenCalledTimes(1)
+  })
+
+  it('treats request and conversation filters as table-only trace search', async () => {
+    const wrapper = mount(UsageView, {
+      global: {
+        stubs: {
+          AppLayout: AppLayoutStub,
+          UsageStatsCards: true,
+          UsageFilters: UsageFiltersStub,
+          UsageTable: true,
+          UsageExportProgress: true,
+          UsageCleanupDialog: true,
+          UserBalanceHistoryModal: true,
+          Pagination: true,
+          Select: true,
+          DateRangePicker: true,
+          Icon: true,
+          TokenUsageTrend: true,
+          UsageUserRanking: true,
+          ModelDistributionChart: ModelDistributionChartStub,
+          GroupDistributionChart: GroupDistributionChartStub,
+        },
+      },
+    })
+
+    vi.advanceTimersByTime(120)
+    await flushPromises()
+
+    expect(list).toHaveBeenCalledTimes(1)
+    expect(getStats).toHaveBeenCalledTimes(1)
+    expect(getModelStats).toHaveBeenCalledTimes(1)
+    expect(getSnapshotV2).toHaveBeenCalledTimes(1)
+    expect(getUserBreakdown).toHaveBeenCalledTimes(1)
+
+    await wrapper.find('.trace-filter').trigger('click')
+    await flushPromises()
+
+    expect(list).toHaveBeenCalledTimes(2)
+    expect(list).toHaveBeenLastCalledWith(expect.objectContaining({
+      request_id: 'req-trace-1',
+      conversation_id: 'session-trace-1',
+    }), expect.anything())
+    expect(getStats).toHaveBeenCalledTimes(1)
+    expect(getModelStats).toHaveBeenCalledTimes(1)
     expect(getSnapshotV2).toHaveBeenCalledTimes(1)
     expect(getUserBreakdown).toHaveBeenCalledTimes(1)
   })
