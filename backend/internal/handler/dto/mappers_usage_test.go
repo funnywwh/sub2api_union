@@ -148,6 +148,25 @@ func TestUsageLogFromService_FallsBackToLegacyModelWhenRequestedModelMissing(t *
 	require.Equal(t, "claude-3", adminDTO.Model)
 }
 
+func TestUsageLogFromServiceAdmin_IncludesConversationIDOnlyForAdmin(t *testing.T) {
+	t.Parallel()
+
+	conversationID := "session-abc-123"
+	log := &service.UsageLog{
+		RequestID:      "req_trace_1",
+		ConversationID: &conversationID,
+		Model:          "gpt-5",
+	}
+
+	userJSON, err := json.Marshal(UsageLogFromService(log))
+	require.NoError(t, err)
+	require.NotContains(t, string(userJSON), "conversation_id")
+
+	adminJSON, err := json.Marshal(UsageLogFromServiceAdmin(log))
+	require.NoError(t, err)
+	require.Contains(t, string(adminJSON), `"conversation_id":"session-abc-123"`)
+}
+
 func f64Ptr(value float64) *float64 {
 	return &value
 }

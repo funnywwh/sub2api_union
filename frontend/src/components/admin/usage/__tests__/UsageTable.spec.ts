@@ -5,6 +5,8 @@ import { nextTick } from 'vue'
 import UsageTable from '../UsageTable.vue'
 
 const messages: Record<string, string> = {
+  'admin.usage.conversationId': 'Conversation ID',
+  'admin.usage.requestId': 'Request ID',
   'usage.costDetails': 'Cost Breakdown',
   'admin.usage.inputCost': 'Input Cost',
   'admin.usage.outputCost': 'Output Cost',
@@ -39,6 +41,7 @@ const DataTableStub = {
   template: `
     <div>
       <div v-for="row in data" :key="row.request_id">
+        <slot name="cell-request" :row="row" />
         <slot name="cell-model" :row="row" :value="row.model" />
         <slot name="cell-cost" :row="row" />
       </div>
@@ -146,5 +149,44 @@ describe('admin UsageTable tooltip', () => {
     const text = wrapper.text()
     expect(text).toContain('claude-sonnet-4')
     expect(text).toContain('claude-sonnet-4-20250514')
+  })
+
+  it('shows conversation and request IDs together for tracing', () => {
+    const row = {
+      request_id: 'req-admin-trace-1',
+      conversation_id: 'session-abc-123',
+      actual_cost: 0,
+      total_cost: 0,
+      account_rate_multiplier: 1,
+      rate_multiplier: 1,
+      input_cost: 0,
+      output_cost: 0,
+      cache_creation_cost: 0,
+      cache_read_cost: 0,
+      input_tokens: 0,
+      output_tokens: 0,
+    }
+
+    const wrapper = mount(UsageTable, {
+      props: {
+        data: [row],
+        loading: false,
+        columns: [],
+      },
+      global: {
+        stubs: {
+          DataTable: DataTableStub,
+          EmptyState: true,
+          Icon: true,
+          Teleport: true,
+        },
+      },
+    })
+
+    const text = wrapper.text()
+    expect(text).toContain('Conversation ID')
+    expect(text).toContain('session-abc-123')
+    expect(text).toContain('Request ID')
+    expect(text).toContain('req-admin-trace-1')
   })
 })

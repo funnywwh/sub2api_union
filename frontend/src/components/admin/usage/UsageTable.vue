@@ -33,6 +33,35 @@
           <span class="text-sm text-gray-900 dark:text-white">{{ row.account?.name || '-' }}</span>
         </template>
 
+        <template #cell-request="{ row }">
+          <div class="max-w-[280px] space-y-1 text-xs">
+            <div class="min-w-0">
+              <div class="text-[11px] font-medium uppercase tracking-wide text-gray-400 dark:text-gray-500">
+                {{ t('admin.usage.conversationId') }}
+              </div>
+              <div
+                v-if="row.conversation_id"
+                class="truncate font-mono text-gray-700 dark:text-gray-300"
+                :title="row.conversation_id"
+              >
+                {{ row.conversation_id }}
+              </div>
+              <div v-else class="text-gray-400 dark:text-gray-500">-</div>
+            </div>
+            <div class="min-w-0">
+              <div class="text-[11px] font-medium uppercase tracking-wide text-gray-400 dark:text-gray-500">
+                {{ t('admin.usage.requestId') }}
+              </div>
+              <div
+                class="truncate font-mono text-gray-700 dark:text-gray-300"
+                :title="row.request_id"
+              >
+                {{ row.request_id || '-' }}
+              </div>
+            </div>
+          </div>
+        </template>
+
         <template #cell-model="{ row }">
           <div v-if="row.model_mapping_chain && row.model_mapping_chain.includes('→')" class="space-y-0.5 text-xs">
             <div v-for="(step, i) in row.model_mapping_chain.split('→')" :key="i"
