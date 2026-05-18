@@ -140,3 +140,5 @@ aiapi-home-static/
 tmp_aiapi/
 .tmp_gocache/trim.txt
 frontend/.pnpm-store/
+sub2api.tar
+sub2api.tgz
