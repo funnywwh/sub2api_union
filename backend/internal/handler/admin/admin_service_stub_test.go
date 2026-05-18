@@ -68,6 +68,12 @@ type stubAdminService struct {
 		sortOrder string
 		calls     int
 	}
+	lastImportUserAPIKey struct {
+		userID int64
+		key    string
+		name   string
+		calls  int
+	}
 	mu sync.Mutex
 }
 
@@ -177,6 +183,29 @@ func (s *stubAdminService) UpdateUserBalance(ctx context.Context, userID int64, 
 
 func (s *stubAdminService) GetUserAPIKeys(ctx context.Context, userID int64, page, pageSize int, sortBy, sortOrder string) ([]service.APIKey, int64, error) {
 	return s.apiKeys, int64(len(s.apiKeys)), nil
+}
+
+func (s *stubAdminService) ImportUserAPIKey(ctx context.Context, userID int64, key, name string) (*service.APIKey, error) {
+	now := time.Now().UTC()
+	s.lastImportUserAPIKey.userID = userID
+	s.lastImportUserAPIKey.key = strings.TrimSpace(key)
+	s.lastImportUserAPIKey.name = strings.TrimSpace(name)
+	s.lastImportUserAPIKey.calls++
+	importedName := strings.TrimSpace(name)
+	if importedName == "" {
+		importedName = "Imported Key"
+	}
+	imported := service.APIKey{
+		ID:        int64(len(s.apiKeys) + 100),
+		UserID:    userID,
+		Key:       strings.TrimSpace(key),
+		Name:      importedName,
+		Status:    service.StatusActive,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	s.apiKeys = append(s.apiKeys, imported)
+	return &imported, nil
 }
 
 func (s *stubAdminService) GetUserUsageStats(ctx context.Context, userID int64, period string) (any, error) {

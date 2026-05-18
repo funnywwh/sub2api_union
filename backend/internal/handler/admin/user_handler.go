@@ -68,6 +68,11 @@ type UpdateBalanceRequest struct {
 	Notes     string  `json:"notes"`
 }
 
+type ImportUserAPIKeyRequest struct {
+	Key  string `json:"key" binding:"required"`
+	Name string `json:"name"`
+}
+
 type BindUserAuthIdentityRequest struct {
 	ProviderType    string                              `json:"provider_type"`
 	ProviderKey     string                              `json:"provider_key"`
@@ -365,6 +370,47 @@ func (h *UserHandler) GetUserAPIKeys(c *gin.Context) {
 		out = append(out, *dto.APIKeyFromService(&keys[i]))
 	}
 	response.Paginated(c, out, total, page, pageSize)
+}
+
+// ImportUserAPIKey handles importing an existing API key for a user.
+// POST /api/v1/admin/users/:id/api-keys/import
+func (h *UserHandler) ImportUserAPIKey(c *gin.Context) {
+	userID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid user ID")
+		return
+	}
+
+	var req ImportUserAPIKeyRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+
+	req.Key = strings.TrimSpace(req.Key)
+	if req.Key == "" {
+		response.BadRequest(c, "Key is required")
+		return
+	}
+	req.Name = strings.TrimSpace(req.Name)
+
+	idempotencyPayload := struct {
+		UserID int64  `json:"user_id"`
+		Key    string `json:"key"`
+		Name   string `json:"name"`
+	}{
+		UserID: userID,
+		Key:    req.Key,
+		Name:   req.Name,
+	}
+
+	executeAdminIdempotentJSON(c, "admin.users.api_keys.import", idempotencyPayload, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
+		key, execErr := h.adminService.ImportUserAPIKey(ctx, userID, req.Key, req.Name)
+		if execErr != nil {
+			return nil, execErr
+		}
+		return dto.APIKeyFromService(key), nil
+	})
 }
 
 // GetUserUsage handles getting user's usage statistics

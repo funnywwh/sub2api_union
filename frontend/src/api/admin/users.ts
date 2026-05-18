@@ -197,6 +197,21 @@ export async function getUserApiKeys(id: number): Promise<PaginatedResponse<ApiK
 }
 
 /**
+ * Import an existing API key for a user.
+ * @param id - User ID
+ * @param key - Existing API key string
+ * @returns Imported API key
+ */
+export async function importUserApiKey(id: number, key: string, name?: string): Promise<ApiKey> {
+  const payload: { key: string; name?: string } = { key }
+  if (name !== undefined) {
+    payload.name = name
+  }
+  const { data } = await apiClient.post<ApiKey>(`/admin/users/${id}/api-keys/import`, payload)
+  return data
+}
+
+/**
  * Get user's usage statistics
  * @param id - User ID
  * @param period - Time period
@@ -307,6 +322,7 @@ export const usersAPI = {
   updateConcurrency,
   toggleStatus,
   getUserApiKeys,
+  importUserApiKey,
   getUserUsageStats,
   getUserBalanceHistory,
   replaceGroup,

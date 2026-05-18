@@ -32,6 +32,7 @@ type AdminService interface {
 	DeleteUser(ctx context.Context, id int64) error
 	UpdateUserBalance(ctx context.Context, userID int64, balance float64, operation string, notes string) (*User, error)
 	GetUserAPIKeys(ctx context.Context, userID int64, page, pageSize int, sortBy, sortOrder string) ([]APIKey, int64, error)
+	ImportUserAPIKey(ctx context.Context, userID int64, key, name string) (*APIKey, error)
 	GetUserUsageStats(ctx context.Context, userID int64, period string) (any, error)
 	GetUserRPMStatus(ctx context.Context, userID int64) (*UserRPMStatus, error)
 	// GetUserBalanceHistory returns paginated balance/concurrency change records for a user.
@@ -870,6 +871,40 @@ func (s *adminServiceImpl) GetUserAPIKeys(ctx context.Context, userID int64, pag
 		return nil, 0, err
 	}
 	return keys, result.Total, nil
+}
+
+func buildImportedAPIKeyName(key string) string {
+	suffix := key
+	if len(suffix) > 8 {
+		suffix = suffix[len(suffix)-8:]
+	}
+	return "Imported Key " + suffix
+}
+
+func (s *adminServiceImpl) ImportUserAPIKey(ctx context.Context, userID int64, key, name string) (*APIKey, error) {
+	trimmedKey := strings.TrimSpace(key)
+	if trimmedKey == "" {
+		return nil, infraerrors.BadRequest("API_KEY_REQUIRED", "api key is required")
+	}
+	trimmedName := strings.TrimSpace(name)
+	if trimmedName == "" {
+		trimmedName = buildImportedAPIKeyName(trimmedKey)
+	}
+
+	apiKeyService := NewAPIKeyService(
+		s.apiKeyRepo,
+		s.userRepo,
+		s.groupRepo,
+		s.userSubRepo,
+		s.userGroupRateRepo,
+		nil,
+		nil,
+	)
+
+	return apiKeyService.Create(ctx, userID, CreateAPIKeyRequest{
+		Name:      trimmedName,
+		CustomKey: &trimmedKey,
+	})
 }
 
 func (s *adminServiceImpl) GetUserRPMStatus(ctx context.Context, userID int64) (*UserRPMStatus, error) {
