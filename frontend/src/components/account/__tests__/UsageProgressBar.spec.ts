@@ -66,4 +66,46 @@ describe('UsageProgressBar', () => {
     expect(wrapper.text()).toContain('2h 30m')
     expect(wrapper.text()).not.toContain('现在')
   })
+
+  it('statusMode=binary 时低于 100% 显示绿色安全态', () => {
+    const wrapper = mount(UsageProgressBar, {
+      props: {
+        label: '7d P',
+        utilization: 88,
+        color: 'amber',
+        statusMode: 'binary'
+      }
+    })
+
+    expect(wrapper.find('.bg-green-500').exists()).toBe(true)
+    expect(wrapper.find('.text-green-600').exists()).toBe(true)
+  })
+
+  it('statusMode=binary 时超过 100% 显示红色超额态', () => {
+    const wrapper = mount(UsageProgressBar, {
+      props: {
+        label: '7d P',
+        utilization: 132,
+        color: 'amber',
+        statusMode: 'binary'
+      }
+    })
+
+    expect(wrapper.find('.bg-red-500').exists()).toBe(true)
+    expect(wrapper.find('.text-red-600').exists()).toBe(true)
+  })
+
+  it('displayText 存在时优先显示自定义文本', () => {
+    const wrapper = mount(UsageProgressBar, {
+      props: {
+        label: '7d P',
+        utilization: 132,
+        color: 'amber',
+        displayText: '+12h'
+      }
+    })
+
+    expect(wrapper.text()).toContain('+12h')
+    expect(wrapper.text()).not.toContain('132%')
+  })
 })

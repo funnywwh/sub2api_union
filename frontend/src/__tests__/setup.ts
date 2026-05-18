@@ -18,6 +18,20 @@ if (typeof globalThis.cancelIdleCallback === 'undefined') {
   }) as unknown as typeof cancelIdleCallback
 }
 
+// Mock matchMedia
+if (typeof window.matchMedia === 'undefined') {
+  window.matchMedia = ((query: string) => ({
+    matches: true,
+    media: query,
+    onchange: null,
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    dispatchEvent: vi.fn()
+  })) as typeof window.matchMedia
+}
+
 // Mock IntersectionObserver
 class MockIntersectionObserver {
   observe = vi.fn()

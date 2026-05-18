@@ -44,7 +44,7 @@
 
       <!-- Percentage -->
       <span :class="['w-[32px] shrink-0 text-right text-[10px] font-medium', textClass]">
-        {{ displayPercent }}
+        {{ displayValue }}
       </span>
 
       <!-- Reset time -->
@@ -69,6 +69,8 @@ const props = defineProps<{
   color: 'indigo' | 'emerald' | 'purple' | 'amber'
   windowStats?: WindowStats | null
   showNowWhenIdle?: boolean
+  statusMode?: 'threshold' | 'binary'
+  displayText?: string
 }>()
 
 const { t } = useI18n()
@@ -109,6 +111,10 @@ const labelClass = computed(() => {
 
 // Progress bar color based on utilization
 const barClass = computed(() => {
+  if (props.statusMode === 'binary') {
+    return props.utilization >= 100 ? 'bg-red-500' : 'bg-green-500'
+  }
+
   if (props.utilization >= 100) {
     return 'bg-red-500'
   } else if (props.utilization >= 80) {
@@ -120,6 +126,12 @@ const barClass = computed(() => {
 
 // Text color based on utilization
 const textClass = computed(() => {
+  if (props.statusMode === 'binary') {
+    return props.utilization >= 100
+      ? 'text-red-600 dark:text-red-400'
+      : 'text-green-600 dark:text-green-400'
+  }
+
   if (props.utilization >= 100) {
     return 'text-red-600 dark:text-red-400'
   } else if (props.utilization >= 80) {
@@ -138,6 +150,10 @@ const barWidth = computed(() => {
 const displayPercent = computed(() => {
   const percent = Math.round(props.utilization)
   return percent > 999 ? '>999%' : `${percent}%`
+})
+
+const displayValue = computed(() => {
+  return props.displayText || displayPercent.value
 })
 
 const shouldShowResetTime = computed(() => {

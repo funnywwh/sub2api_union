@@ -330,6 +330,116 @@ describe('AccountUsageCell', () => {
     expect(wrapper.text()).toContain('5h|18|900')
   })
 
+  it('OpenAI OAuth 会追加一条按真实 7 天节奏推算的超额预测条', async () => {
+    getUsage.mockResolvedValue({
+      five_hour: {
+        utilization: 12,
+        resets_at: '2099-03-07T12:00:00Z',
+        remaining_seconds: 3600,
+        window_stats: {
+          requests: 9,
+          tokens: 900,
+          cost: 0.09,
+          standard_cost: 0.09,
+          user_cost: 0.09
+        }
+      },
+      seven_day: {
+        utilization: 60,
+        resets_at: '2099-03-13T12:00:00Z',
+        remaining_seconds: 3 * 24 * 60 * 60,
+        window_stats: {
+          requests: 9,
+          tokens: 900,
+          cost: 0.09,
+          standard_cost: 0.09,
+          user_cost: 0.09
+        }
+      }
+    })
+
+    const wrapper = mount(AccountUsageCell, {
+      props: {
+        account: makeAccount({
+          id: 2011,
+          platform: 'openai',
+          type: 'oauth',
+          extra: {}
+        })
+      },
+      global: {
+        stubs: {
+          UsageProgressBar: {
+            props: ['label', 'utilization', 'resetsAt', 'windowStats', 'color', 'statusMode', 'displayText'],
+            template: '<div class="usage-bar">{{ label }}|{{ utilization }}|{{ displayText }}</div>'
+          },
+          AccountQuotaInfo: true
+        }
+      }
+    })
+
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('7d|60')
+    expect(wrapper.text()).toContain('admin.accounts.usageWindow.projected7d')
+    expect(wrapper.text()).toContain('|-5h')
+  })
+
+  it('OpenAI OAuth 的 7 天预测条会按剩余额度与剩余时间显示小时差', async () => {
+    getUsage.mockResolvedValue({
+      five_hour: {
+        utilization: 12,
+        resets_at: '2099-03-07T12:00:00Z',
+        remaining_seconds: 3600,
+        window_stats: {
+          requests: 9,
+          tokens: 900,
+          cost: 0.09,
+          standard_cost: 0.09,
+          user_cost: 0.09
+        }
+      },
+      seven_day: {
+        utilization: 25,
+        resets_at: '2099-03-13T12:00:00Z',
+        remaining_seconds: (5 * 24 + 10) * 60 * 60,
+        window_stats: {
+          requests: 9,
+          tokens: 900,
+          cost: 0.09,
+          standard_cost: 0.09,
+          user_cost: 0.09
+        }
+      }
+    })
+
+    const wrapper = mount(AccountUsageCell, {
+      props: {
+        account: makeAccount({
+          id: 2012,
+          platform: 'openai',
+          type: 'oauth',
+          extra: {}
+        })
+      },
+      global: {
+        stubs: {
+          UsageProgressBar: {
+            props: ['label', 'utilization', 'resetsAt', 'windowStats', 'color', 'statusMode', 'displayText'],
+            template: '<div class="usage-bar">{{ label }}|{{ utilization }}|{{ displayText }}</div>'
+          },
+          AccountQuotaInfo: true
+        }
+      }
+    })
+
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('7d|25')
+    expect(wrapper.text()).toContain('admin.accounts.usageWindow.projected7d')
+    expect(wrapper.text()).toContain('|-4h')
+  })
+
   it('OpenAI OAuth 在无 codex 快照时会回退显示 usage 接口窗口', async () => {
 	getUsage.mockResolvedValue({
 	  five_hour: {

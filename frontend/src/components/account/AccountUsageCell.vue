@@ -58,6 +58,14 @@
           :resets-at="usageInfo.seven_day.resets_at"
           color="emerald"
         />
+        <UsageProgressBar
+          v-if="projectedSevenDayBar"
+          :label="projectedSevenDayBar.label"
+          :utilization="projectedSevenDayBar.utilization"
+          :status-mode="projectedSevenDayBar.statusMode"
+          :display-text="projectedSevenDayBar.displayText"
+          color="amber"
+        />
 
         <!-- 7d Sonnet Window (OAuth only) -->
         <UsageProgressBar
@@ -125,6 +133,14 @@
           :window-stats="usageInfo.seven_day.window_stats"
           :show-now-when-idle="true"
           color="emerald"
+        />
+        <UsageProgressBar
+          v-if="projectedSevenDayBar"
+          :label="projectedSevenDayBar.label"
+          :utilization="projectedSevenDayBar.utilization"
+          :status-mode="projectedSevenDayBar.statusMode"
+          :display-text="projectedSevenDayBar.displayText"
+          color="amber"
         />
       </div>
       <div v-else-if="loading" class="space-y-1.5">
@@ -442,7 +458,7 @@
 import { ref, computed, onMounted, onBeforeUnmount, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { adminAPI } from '@/api/admin'
-import type { Account, AccountUsageInfo, GeminiCredentials, WindowStats } from '@/types'
+import type { Account, AccountUsageInfo, GeminiCredentials, UsageProgress, WindowStats } from '@/types'
 import { buildOpenAIUsageRefreshKey } from '@/utils/accountUsageRefresh'
 import { enqueueUsageRequest } from '@/utils/usageLoadQueue'
 import { formatCompactNumber } from '@/utils/format'
@@ -452,6 +468,10 @@ import AccountQuotaInfo from './AccountQuotaInfo.vue'
 // Module-level cache shared across all AccountUsageCell instances
 const _usageCache = new Map<number, { data: AccountUsageInfo; ts: number }>()
 const USAGE_CACHE_TTL = 5 * 60 * 1000 // 5 minutes
+const SEVEN_DAY_WINDOW_SECONDS = 7 * 24 * 60 * 60
+const SEVEN_DAY_PROJECTION_THRESHOLD_HOURS = 2
+const SEVEN_DAY_PROJECTION_POSITIVE_BIAS = 2
+const SEVEN_DAY_PROJECTION_NEGATIVE_BIAS = -2
 
 const props = withDefaults(
   defineProps<{
@@ -528,6 +548,71 @@ const hasOpenAIUsageFallback = computed(() => {
   return !!usageInfo.value?.five_hour || !!usageInfo.value?.seven_day
 })
 
+const projectSevenDayUtilization = (progress: UsageProgress | null | undefined): number | null => {
+  if (!progress) return null
+
+  const utilization = Number(progress.utilization)
+  const remainingSeconds = Number(progress.remaining_seconds)
+  if (!Number.isFinite(utilization) || !Number.isFinite(remainingSeconds)) {
+    return null
+  }
+
+  const clampedRemainingSeconds = Math.min(
+    Math.max(remainingSeconds, 0),
+    SEVEN_DAY_WINDOW_SECONDS
+  )
+  const elapsedSeconds = SEVEN_DAY_WINDOW_SECONDS - clampedRemainingSeconds
+  if (elapsedSeconds <= 0) {
+    return Math.max(utilization, 0)
+  }
+
+  const elapsedRatio = elapsedSeconds / SEVEN_DAY_WINDOW_SECONDS
+  let projectedUtilization = utilization / elapsedRatio
+  const remainingHours = clampedRemainingSeconds / 3600
+
+  if (remainingHours > SEVEN_DAY_PROJECTION_THRESHOLD_HOURS) {
+    projectedUtilization += SEVEN_DAY_PROJECTION_POSITIVE_BIAS
+  } else if (remainingHours < SEVEN_DAY_PROJECTION_THRESHOLD_HOURS) {
+    projectedUtilization += SEVEN_DAY_PROJECTION_NEGATIVE_BIAS
+  }
+
+  return Math.max(projectedUtilization, 0)
+}
+
+const formatProjectedSevenDayDeltaHours = (
+  progress: UsageProgress | null | undefined
+): string => {
+  if (!progress) return '0h'
+
+  const utilization = Number(progress.utilization)
+  const remainingSeconds = Number(progress.remaining_seconds)
+  if (!Number.isFinite(utilization) || !Number.isFinite(remainingSeconds)) {
+    return '0h'
+  }
+
+  const remainingHours = Math.min(
+    Math.max(remainingSeconds, 0),
+    SEVEN_DAY_WINDOW_SECONDS
+  ) / 3600
+  const remainingQuotaHours = SEVEN_DAY_WINDOW_SECONDS / 3600 * (1 - utilization / 100)
+  const deltaHours = Math.round(remainingQuotaHours - remainingHours)
+  if (deltaHours === 0) return '0h'
+  return `${deltaHours > 0 ? '+' : ''}${deltaHours}h`
+}
+
+const projectedSevenDayBar = computed((): ProjectedSevenDayBar | null => {
+  const sevenDayProgress = usageInfo.value?.seven_day
+  const utilization = projectSevenDayUtilization(usageInfo.value?.seven_day)
+  if (utilization == null) return null
+
+  return {
+    label: t('admin.accounts.usageWindow.projected7d'),
+    utilization,
+    statusMode: 'binary',
+    displayText: formatProjectedSevenDayDeltaHours(sevenDayProgress)
+  }
+})
+
 const openAIUsageRefreshKey = computed(() => buildOpenAIUsageRefreshKey(props.account))
 
 const shouldAutoLoadUsageOnMount = computed(() => {
@@ -542,6 +627,13 @@ const shouldLazyLoadOnMobile = computed(() => {
 interface AntigravityUsageResult {
   utilization: number
   resetTime: string | null
+}
+
+interface ProjectedSevenDayBar {
+  label: string
+  utilization: number
+  statusMode: 'binary'
+  displayText: string
 }
 
 // ===== Antigravity quota from API (usageInfo.antigravity_quota) =====
