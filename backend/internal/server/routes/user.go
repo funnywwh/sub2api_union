@@ -74,6 +74,7 @@ func RegisterUserRoutes(
 		{
 			chat.GET("/models", h.UserChat.ListModels)
 			chat.POST("/completions", h.UserChat.ChatCompletions)
+			chat.POST("/images", h.UserChat.Images)
 		}
 
 		// 用户可用渠道（非管理员接口）

@@ -528,9 +528,11 @@ import { Icon } from '@/components/icons'
 import { useAppStore, useAuthStore } from '@/stores'
 import { userGroupsAPI } from '@/api'
 import {
+  generateUserChatImages,
   listUserChatModels,
   streamUserChatCompletion,
   type ChatModel,
+  type GenerateUserChatImagesResult,
   type UserChatMessagePayload
 } from '@/api/chat'
 import type { Group } from '@/types'
@@ -587,6 +589,17 @@ const PRESENTATION_EXTENSIONS = new Set(['ppt', 'pptx'])
 const MAX_INLINE_IMAGE_BYTES = 8 * 1024 * 1024
 const MAX_INLINE_TEXT_BYTES = 2 * 1024 * 1024
 const MAX_PREVIEW_FILE_BYTES = 20 * 1024 * 1024
+const IMAGE_GENERATION_MODEL_PRIORITY = [
+  'gpt-image-2',
+  'gpt-image-1.5',
+  'gpt-image-1',
+  'gemini-3.1-flash-image',
+  'gemini-2.5-flash-image',
+  'gemini-3-pro-image'
+]
+const IMAGE_GENERATION_REQUEST_PATTERN = /\b(generate|create|draw|render|make)\b[\s\S]{0,40}\b(image|picture|photo|illustration|art|artwork|logo|poster|icon|avatar|wallpaper)\b/i
+const IMAGE_GENERATION_REQUEST_PATTERN_ZH = /(生成|画|绘制|制作|渲染).{0,20}(图片|图像|配图|插画|海报|头像|壁纸|logo|照片)/i
+const IMAGE_GENERATION_EXCLUSION_PATTERN = /\b(prompt|prompts|提示词|怎么写|如何写|教程|解释|说明|优化|改写|润色)\b/i
 
 const { t } = useI18n()
 const appStore = useAppStore()
@@ -1088,6 +1101,10 @@ function buildUserMessageDisplayContent(sourceText: string, attachments: ChatAtt
   return segments.join('\n\n').trim()
 }
 
+function buildAssistantMessageDisplayContent(sourceText: string, attachments: ChatAttachment[] = []): string {
+  return buildUserMessageDisplayContent(sourceText, attachments)
+}
+
 function buildUserMessagePayloadContent(
   sourceText: string,
   attachments: ChatAttachment[] = []
@@ -1189,6 +1206,119 @@ function buildRenderableAttachmentAssets(
       label: attachment.name,
       extension: getFileExtension(attachment.name) || attachment.kind
     }))
+}
+
+function isOpenAIImageModel(model: string): boolean {
+  return model.trim().toLowerCase().startsWith('gpt-image-')
+}
+
+function isGeminiImageModel(model: string): boolean {
+  const normalized = model.trim().toLowerCase()
+  return normalized.startsWith('gemini-') && normalized.includes('-image')
+}
+
+function isImageGenerationModel(model: string): boolean {
+  return isOpenAIImageModel(model) || isGeminiImageModel(model)
+}
+
+function promptRequestsImageGeneration(prompt: string): boolean {
+  const normalized = prompt.trim()
+  if (!normalized || IMAGE_GENERATION_EXCLUSION_PATTERN.test(normalized)) {
+    return false
+  }
+  return IMAGE_GENERATION_REQUEST_PATTERN.test(normalized) || IMAGE_GENERATION_REQUEST_PATTERN_ZH.test(normalized)
+}
+
+function getAvailableImageModelId(models: ChatModel[] = []): string {
+  const imageModelIds = models
+    .map((model) => model.id)
+    .filter((id) => isImageGenerationModel(id))
+
+  if (!imageModelIds.length) {
+    return ''
+  }
+
+  const priorityMap = new Map(IMAGE_GENERATION_MODEL_PRIORITY.map((id, index) => [id, index]))
+  return [...imageModelIds].sort((a, b) => {
+    const aPriority = priorityMap.get(a) ?? Number.MAX_SAFE_INTEGER
+    const bPriority = priorityMap.get(b) ?? Number.MAX_SAFE_INTEGER
+    if (aPriority !== bPriority) {
+      return aPriority - bPriority
+    }
+    return a.localeCompare(b)
+  })[0] || ''
+}
+
+function resolveImageGenerationModel(session: ChatSession): string {
+  const currentModel = session.model.trim()
+  if (isImageGenerationModel(currentModel)) {
+    return currentModel
+  }
+
+  const group = resolveGroupForSession(session)
+  if (!group) {
+    return ''
+  }
+
+  return getAvailableImageModelId(modelCache.value[group.id] || [])
+}
+
+function shouldAnnounceImageModelSwitch(session: ChatSession, imageModel: string): boolean {
+  return Boolean(imageModel) && session.model.trim() !== imageModel
+}
+
+function shouldUseImageGeneration(
+  session: ChatSession,
+  sourceText: string,
+  attachments: ChatAttachment[] = []
+): boolean {
+  if (attachments.length) {
+    return false
+  }
+
+  const imageModel = resolveImageGenerationModel(session)
+  if (!imageModel) {
+    return false
+  }
+
+  return isImageGenerationModel(session.model.trim()) || promptRequestsImageGeneration(sourceText)
+}
+
+function getImageMimeExtension(mimeType: string): string {
+  const normalized = mimeType.trim().toLowerCase()
+  switch (normalized) {
+    case 'image/jpeg':
+      return 'jpg'
+    case 'image/svg+xml':
+      return 'svg'
+    default:
+      return normalized.startsWith('image/') ? normalized.slice('image/'.length) : 'png'
+  }
+}
+
+function buildGeneratedImageAttachments(images: GenerateUserChatImagesResult['images']): ChatAttachment[] {
+  return images.map((image, index) => {
+    const extension = getImageMimeExtension(image.mimeType)
+    return {
+      id: randomId(),
+      name: `generated-image-${index + 1}.${extension}`,
+      kind: 'image',
+      mimeType: image.mimeType,
+      url: image.url,
+      size: 0,
+      includeInModelContext: false
+    }
+  })
+}
+
+function buildAssistantImageRequestContent(
+  prompt: string,
+  model: string,
+  images: ChatAttachment[],
+  summaryText: string
+): string {
+  const details = summaryText.trim() || `Generated ${images.length} image${images.length > 1 ? 's' : ''}.`
+  return `${details}\n\nImage generation prompt: ${prompt}\nModel: ${model}`.trim()
 }
 
 function resetComposerFileInput() {
@@ -1459,6 +1589,11 @@ function canRegenerateMessage(messageId: string): boolean {
 
 function getCopyableMessageContent(message: ChatMessage): string {
   if (message.role !== 'user') {
+    if (message.attachments?.length) {
+      const summary = typeof message.requestContent === 'string' ? message.requestContent.trim() : ''
+      const attachmentList = message.attachments.map((attachment) => `[${attachment.kind}] ${attachment.name}`).join('\n')
+      return [summary, attachmentList].filter(Boolean).join('\n\n').trim() || message.content
+    }
     return message.content
   }
 
@@ -1654,6 +1789,75 @@ async function streamAssistantReply(session: ChatSession, payloadMessages: UserC
   }
 }
 
+async function generateAssistantImageReply(session: ChatSession, prompt: string) {
+  const group = resolveGroupForSession(session)
+  if (!group) {
+    appStore.showError(t('chat.selectGroupFirst'))
+    return
+  }
+
+  const imageModel = resolveImageGenerationModel(session)
+  if (!imageModel) {
+    appStore.showError(t('chat.noImageModelAvailable'))
+    return
+  }
+
+  if (shouldAnnounceImageModelSwitch(session, imageModel)) {
+    appStore.showInfo(t('chat.autoSwitchedToImageModel', { model: imageModel }))
+  }
+
+  const assistantMessage: ChatMessage = {
+    id: randomId(),
+    role: 'assistant',
+    content: '',
+    createdAt: nowIso()
+  }
+
+  session.messages.push(assistantMessage)
+  generating.value = true
+  streamingMessageId.value = assistantMessage.id
+  abortController.value = new AbortController()
+  queueScrollToBottom()
+
+  try {
+    const result = await generateUserChatImages({
+      groupId: group.id,
+      model: imageModel,
+      prompt,
+      signal: abortController.value.signal
+    })
+
+    const imageAttachments = buildGeneratedImageAttachments(result.images)
+    const summaryText = result.text.trim() || `Generated ${imageAttachments.length} image${imageAttachments.length > 1 ? 's' : ''}.`
+
+    assistantMessage.attachments = imageAttachments
+    assistantMessage.content = buildAssistantMessageDisplayContent(summaryText, imageAttachments)
+    assistantMessage.requestContent = buildAssistantImageRequestContent(prompt, imageModel, imageAttachments, result.text)
+
+    if (!imageAttachments.length) {
+      assistantMessage.error = true
+      assistantMessage.content = t('chat.imageGenerationEmpty')
+      appStore.showError(assistantMessage.content)
+    }
+  } catch (error) {
+    if (isAbortError(error)) {
+      session.messages = session.messages.filter((message) => message.id !== assistantMessage.id)
+    } else if (!assistantMessage.content.trim()) {
+      assistantMessage.error = true
+      assistantMessage.content = extractApiErrorMessage(error, t('chat.requestFailed'))
+      appStore.showError(assistantMessage.content)
+    } else {
+      appStore.showError(extractApiErrorMessage(error, t('chat.requestFailed')))
+    }
+  } finally {
+    generating.value = false
+    streamingMessageId.value = null
+    abortController.value = null
+    touchSession(session)
+    queueScrollToBottom()
+  }
+}
+
 async function sendMessage() {
   const session = activeSession.value
   const prompt = draft.value.trim()
@@ -1699,6 +1903,11 @@ async function sendMessage() {
   pendingAttachments.value = []
   resetComposerFileInput()
   resizeComposerTextarea()
+
+  if (shouldUseImageGeneration(session, prompt, attachments)) {
+    await generateAssistantImageReply(session, prompt)
+    return
+  }
 
   await streamAssistantReply(session, buildPayloadMessages(session.messages))
 }
@@ -1748,6 +1957,11 @@ async function submitEditedMessage() {
   touchSession(session)
   cancelEditingMessage()
 
+  if (shouldUseImageGeneration(session, nextContent, retainedAttachments)) {
+    await generateAssistantImageReply(session, nextContent)
+    return
+  }
+
   await streamAssistantReply(session, buildPayloadMessages(session.messages))
 }
 
@@ -1771,6 +1985,11 @@ async function regenerateAssistantFromMessage(messageId: string) {
   session.messages.slice(messageIndex).forEach((message) => releaseMessageAttachments(message))
   session.messages = previousMessages
   touchSession(session)
+
+  if (shouldUseImageGeneration(session, lastUserBeforeAssistant.sourceText || lastUserBeforeAssistant.content, lastUserBeforeAssistant.attachments || [])) {
+    await generateAssistantImageReply(session, lastUserBeforeAssistant.sourceText || lastUserBeforeAssistant.content)
+    return
+  }
 
   await streamAssistantReply(session, buildPayloadMessages(session.messages))
 }
@@ -1844,7 +2063,7 @@ watch(activeSessionId, () => {
 
 <style scoped>
 .chat-workspace {
-  @apply relative flex min-h-[calc(100vh-4rem)] bg-[#fcfbf8] text-gray-900 dark:bg-[#111214] dark:text-white;
+  @apply relative flex h-[calc(100vh-4rem)] overflow-hidden bg-gray-50 text-gray-900 dark:bg-dark-950 dark:text-white;
 }
 
 .chat-mobile-backdrop {
@@ -1852,7 +2071,7 @@ watch(activeSessionId, () => {
 }
 
 .chat-history {
-  @apply relative z-40 flex w-[320px] shrink-0 flex-col border-r border-black/5 bg-[#f3f1eb] transition-all duration-300 dark:border-white/10 dark:bg-[#16181c];
+  @apply relative z-40 flex h-full w-[320px] shrink-0 flex-col overflow-hidden border-r border-gray-200 bg-white transition-all duration-300 dark:border-dark-700 dark:bg-dark-900;
 }
 
 .chat-history-collapsed {
@@ -1860,11 +2079,11 @@ watch(activeSessionId, () => {
 }
 
 .chat-history-header {
-  @apply flex items-center gap-2 border-b border-black/5 p-4 dark:border-white/10;
+  @apply flex items-center gap-2 border-b border-gray-200 p-4 dark:border-dark-700;
 }
 
 .chat-new-session {
-  @apply inline-flex flex-1 items-center justify-center gap-2 rounded-2xl bg-[#202123] px-4 py-3 text-sm font-medium text-white transition hover:bg-black disabled:cursor-not-allowed disabled:opacity-50 dark:bg-white dark:text-[#111214] dark:hover:bg-white/90;
+  @apply inline-flex flex-1 items-center justify-center gap-2 rounded-2xl bg-primary-500 px-4 py-3 text-sm font-medium text-white transition hover:bg-primary-600 disabled:cursor-not-allowed disabled:opacity-50;
 }
 
 .chat-new-session-collapsed {
@@ -1873,11 +2092,11 @@ watch(activeSessionId, () => {
 }
 
 .chat-icon-button {
-  @apply inline-flex h-10 w-10 items-center justify-center rounded-2xl text-gray-500 transition hover:bg-black/5 hover:text-gray-900 dark:text-gray-300 dark:hover:bg-white/5 dark:hover:text-white;
+  @apply inline-flex h-10 w-10 items-center justify-center rounded-2xl text-gray-500 transition hover:bg-gray-100 hover:text-gray-900 dark:text-dark-300 dark:hover:bg-dark-800 dark:hover:text-white;
 }
 
 .chat-history-intro {
-  @apply border-b border-black/5 px-4 pb-4 pt-1 dark:border-white/10;
+  @apply border-b border-gray-200 px-4 pb-4 pt-1 dark:border-dark-700;
 }
 
 .chat-history-kicker {
@@ -1893,7 +2112,7 @@ watch(activeSessionId, () => {
 }
 
 .chat-pill {
-  @apply inline-flex items-center gap-2 rounded-full border border-black/5 bg-white px-3 py-1 text-xs font-medium text-gray-600 dark:border-white/10 dark:bg-white/[0.05] dark:text-gray-300;
+  @apply inline-flex items-center gap-2 rounded-full border border-gray-200 bg-gray-50 px-3 py-1 text-xs font-medium text-gray-600 dark:border-dark-700 dark:bg-dark-800 dark:text-dark-300;
 }
 
 .chat-pill-active {
@@ -1905,7 +2124,7 @@ watch(activeSessionId, () => {
 }
 
 .chat-history-empty-icon {
-  @apply flex h-14 w-14 items-center justify-center rounded-2xl bg-white text-gray-900 shadow-sm dark:bg-white/[0.08] dark:text-white;
+  @apply flex h-14 w-14 items-center justify-center rounded-2xl bg-gray-50 text-gray-900 shadow-sm dark:bg-dark-800 dark:text-white;
 }
 
 .chat-history-empty-title {
@@ -1925,19 +2144,19 @@ watch(activeSessionId, () => {
 }
 
 .chat-session-mini {
-  @apply inline-flex h-12 w-12 items-center justify-center rounded-2xl border border-transparent bg-white text-sm font-semibold text-gray-700 shadow-sm transition hover:border-black/5 hover:text-gray-900 dark:bg-white/[0.05] dark:text-gray-200 dark:hover:border-white/10 dark:hover:text-white;
+  @apply inline-flex h-12 w-12 items-center justify-center rounded-2xl border border-transparent bg-gray-50 text-sm font-semibold text-gray-700 shadow-sm transition hover:border-gray-200 hover:bg-white hover:text-gray-900 dark:bg-dark-800 dark:text-dark-200 dark:hover:border-dark-600 dark:hover:text-white;
 }
 
 .chat-session-mini-active {
-  @apply border-black/10 bg-[#202123] text-white dark:border-white/10 dark:bg-white dark:text-[#111214];
+  @apply border-primary-200 bg-primary-50 text-primary-700 dark:border-primary-800 dark:bg-primary-900/30 dark:text-primary-300;
 }
 
 .chat-session-item {
-  @apply flex items-start gap-2 rounded-2xl border border-transparent bg-white/80 px-3 py-3 shadow-sm transition hover:border-black/5 hover:bg-white dark:bg-white/[0.04] dark:hover:border-white/10 dark:hover:bg-white/[0.07];
+  @apply flex items-start gap-2 rounded-2xl border border-transparent bg-gray-50 px-3 py-3 shadow-sm transition hover:border-gray-200 hover:bg-white dark:bg-dark-800 dark:hover:border-dark-600 dark:hover:bg-dark-800;
 }
 
 .chat-session-item-active {
-  @apply border-black/10 bg-white dark:border-white/10 dark:bg-white/[0.08];
+  @apply border-primary-200 bg-white dark:border-primary-900/40 dark:bg-dark-800;
 }
 
 .chat-session-main {
@@ -1965,7 +2184,7 @@ watch(activeSessionId, () => {
 }
 
 .chat-session-action {
-  @apply inline-flex h-8 w-8 items-center justify-center rounded-xl text-gray-400 transition hover:bg-black/5 hover:text-gray-900 dark:hover:bg-white/5 dark:hover:text-white;
+  @apply inline-flex h-8 w-8 items-center justify-center rounded-xl text-gray-400 transition hover:bg-gray-100 hover:text-gray-900 dark:hover:bg-dark-700 dark:hover:text-white;
 }
 
 .chat-rename-panel {
@@ -1973,19 +2192,19 @@ watch(activeSessionId, () => {
 }
 
 .chat-rename-input {
-  @apply w-full rounded-2xl border border-black/10 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20 dark:border-white/10 dark:bg-white/[0.06] dark:text-white;
+  @apply w-full rounded-2xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20 dark:border-dark-700 dark:bg-dark-800 dark:text-white;
 }
 
 .chat-history-footer {
-  @apply border-t border-black/5 px-4 py-4 text-xs leading-6 text-gray-500 dark:border-white/10 dark:text-gray-400;
+  @apply border-t border-gray-200 px-4 py-4 text-xs leading-6 text-gray-500 dark:border-dark-700 dark:text-dark-400;
 }
 
 .chat-main {
-  @apply flex min-w-0 flex-1 flex-col;
+  @apply flex min-h-0 min-w-0 flex-1 flex-col;
 }
 
 .chat-main-header {
-  @apply flex flex-col gap-4 border-b border-black/5 bg-white/80 px-4 py-4 backdrop-blur dark:border-white/10 dark:bg-[#111214]/90 md:px-6 xl:flex-row xl:items-center xl:justify-between;
+  @apply flex flex-col gap-4 border-b border-gray-200 bg-white/90 px-4 py-4 backdrop-blur dark:border-dark-700 dark:bg-dark-950/90 md:px-6 xl:flex-row xl:items-center xl:justify-between;
 }
 
 .chat-main-heading {
@@ -2017,7 +2236,7 @@ watch(activeSessionId, () => {
 }
 
 .chat-toolbar-control {
-  @apply w-full rounded-2xl border border-black/10 bg-white px-4 py-2.5 text-sm text-gray-900 outline-none transition focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20 disabled:cursor-not-allowed disabled:bg-gray-100 dark:border-white/10 dark:bg-white/[0.04] dark:text-white dark:disabled:bg-white/[0.03];
+  @apply w-full rounded-2xl border border-gray-200 bg-white px-4 py-2.5 text-sm text-gray-900 outline-none transition focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20 disabled:cursor-not-allowed disabled:bg-gray-100 dark:border-dark-700 dark:bg-dark-900 dark:text-white dark:disabled:bg-dark-800;
 }
 
 .chat-thread {
@@ -2029,7 +2248,7 @@ watch(activeSessionId, () => {
 }
 
 .chat-message-row {
-  @apply flex gap-4 rounded-3xl px-4 py-5 transition hover:bg-black/[0.025] dark:hover:bg-white/[0.02];
+  @apply flex gap-4 rounded-3xl px-4 py-5 transition hover:bg-gray-100/80 dark:hover:bg-dark-900/60;
 }
 
 .chat-message-avatar {
@@ -2037,7 +2256,7 @@ watch(activeSessionId, () => {
 }
 
 .chat-message-avatar-user {
-  @apply bg-[#202123] text-white dark:bg-white dark:text-[#111214];
+  @apply bg-primary-500 text-white;
 }
 
 .chat-message-avatar-assistant {
@@ -2061,7 +2280,7 @@ watch(activeSessionId, () => {
 }
 
 .chat-message-content-user {
-  @apply overflow-hidden rounded-[28px] border border-black/5 bg-white px-5 py-4 shadow-sm dark:border-white/10 dark:bg-white/[0.05];
+  @apply overflow-hidden rounded-[28px] border border-gray-200 bg-white px-5 py-4 shadow-sm dark:border-dark-700 dark:bg-dark-900;
 }
 
 .chat-message-content-assistant {
@@ -2077,11 +2296,11 @@ watch(activeSessionId, () => {
 }
 
 .chat-inline-action {
-  @apply inline-flex items-center gap-1 rounded-full border border-black/5 bg-white px-3 py-1.5 text-xs font-medium text-gray-600 transition hover:border-black/10 hover:text-gray-900 disabled:cursor-not-allowed disabled:opacity-50 dark:border-white/10 dark:bg-white/[0.04] dark:text-gray-300 dark:hover:bg-white/[0.08] dark:hover:text-white;
+  @apply inline-flex items-center gap-1 rounded-full border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-gray-600 transition hover:border-primary-200 hover:text-gray-900 disabled:cursor-not-allowed disabled:opacity-50 dark:border-dark-700 dark:bg-dark-900 dark:text-dark-300 dark:hover:bg-dark-800 dark:hover:text-white;
 }
 
 .chat-edit-box {
-  @apply mt-3 rounded-[28px] border border-black/10 bg-white p-4 shadow-sm dark:border-white/10 dark:bg-white/[0.05];
+  @apply mt-3 rounded-[28px] border border-gray-200 bg-white p-4 shadow-sm dark:border-dark-700 dark:bg-dark-900;
 }
 
 .chat-edit-textarea {
@@ -2089,7 +2308,7 @@ watch(activeSessionId, () => {
 }
 
 .chat-edit-footer {
-  @apply mt-3 flex flex-wrap items-center justify-between gap-3 border-t border-black/5 pt-3 dark:border-white/10;
+  @apply mt-3 flex flex-wrap items-center justify-between gap-3 border-t border-gray-200 pt-3 dark:border-dark-700;
 }
 
 .chat-edit-hint {
@@ -2101,11 +2320,11 @@ watch(activeSessionId, () => {
 }
 
 .chat-empty-orb {
-  @apply flex h-20 w-20 items-center justify-center rounded-[28px] bg-[#202123] text-white shadow-lg dark:bg-white dark:text-[#111214];
+  @apply flex h-20 w-20 items-center justify-center rounded-[28px] bg-primary-500 text-white shadow-lg shadow-primary-500/20;
 }
 
 .chat-empty-badge {
-  @apply mt-5 inline-flex items-center gap-2 rounded-full border border-black/5 bg-white px-4 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-gray-600 dark:border-white/10 dark:bg-white/[0.05] dark:text-gray-300;
+  @apply mt-5 inline-flex items-center gap-2 rounded-full border border-gray-200 bg-white px-4 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-gray-600 dark:border-dark-700 dark:bg-dark-900 dark:text-dark-300;
 }
 
 .chat-empty-title {
@@ -2121,11 +2340,11 @@ watch(activeSessionId, () => {
 }
 
 .chat-starter-button {
-  @apply rounded-[28px] border border-black/5 bg-white p-5 text-left transition hover:-translate-y-0.5 hover:border-black/10 hover:shadow-lg disabled:cursor-not-allowed disabled:opacity-50 dark:border-white/10 dark:bg-white/[0.04] dark:hover:bg-white/[0.08];
+  @apply rounded-[28px] border border-gray-200 bg-white p-5 text-left transition hover:-translate-y-0.5 hover:border-primary-200 hover:shadow-lg disabled:cursor-not-allowed disabled:opacity-50 dark:border-dark-700 dark:bg-dark-900 dark:hover:border-primary-900/40 dark:hover:bg-dark-800;
 }
 
 .chat-starter-icon {
-  @apply flex h-10 w-10 items-center justify-center rounded-2xl bg-[#f3f1eb] text-gray-700 dark:bg-white/[0.06] dark:text-gray-200;
+  @apply flex h-10 w-10 items-center justify-center rounded-2xl bg-primary-50 text-primary-600 dark:bg-primary-900/20 dark:text-primary-300;
 }
 
 .chat-starter-title {
@@ -2137,7 +2356,12 @@ watch(activeSessionId, () => {
 }
 
 .chat-composer-shell {
-  @apply sticky bottom-0 bg-gradient-to-t from-[#fcfbf8] via-[#fcfbf8]/96 to-transparent px-4 pb-4 pt-3 dark:from-[#111214] dark:via-[#111214]/96 md:px-6 lg:px-10;
+  @apply sticky bottom-0 px-4 pb-4 pt-3 md:px-6 lg:px-10;
+  background-image: linear-gradient(to top, rgb(249 250 251), rgb(249 250 251 / 0.96), transparent);
+}
+
+:global(.dark) .chat-composer-shell {
+  background-image: linear-gradient(to top, rgb(3 7 18), rgb(3 7 18 / 0.96), transparent);
 }
 
 .chat-editing-banner {
@@ -2145,7 +2369,7 @@ watch(activeSessionId, () => {
 }
 
 .chat-composer-card {
-  @apply mx-auto flex max-w-5xl flex-col gap-3 rounded-[28px] border border-black/5 bg-white p-3 shadow-[0_24px_70px_-30px_rgba(15,23,42,0.45)] dark:border-white/10 dark:bg-[#17181c];
+  @apply mx-auto flex max-w-5xl flex-col gap-3 rounded-[28px] border border-gray-200 bg-white p-3 shadow-[0_24px_70px_-30px_rgba(15,23,42,0.18)] dark:border-dark-700 dark:bg-dark-900;
 }
 
 .chat-pending-attachments {
@@ -2153,7 +2377,7 @@ watch(activeSessionId, () => {
 }
 
 .chat-pending-attachment {
-  @apply flex items-center justify-between gap-3 rounded-2xl border border-black/5 bg-[#f7f6f2] px-3 py-2 dark:border-white/10 dark:bg-white/[0.05];
+  @apply flex items-center justify-between gap-3 rounded-2xl border border-gray-200 bg-gray-50 px-3 py-2 dark:border-dark-700 dark:bg-dark-800;
 }
 
 .chat-pending-attachment-main {
@@ -2161,7 +2385,7 @@ watch(activeSessionId, () => {
 }
 
 .chat-pending-attachment-badge {
-  @apply inline-flex min-w-[3rem] items-center justify-center rounded-full bg-[#202123] px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-white dark:bg-white dark:text-[#111214];
+  @apply inline-flex min-w-[3rem] items-center justify-center rounded-full bg-primary-100 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-primary-700 dark:bg-primary-900/30 dark:text-primary-300;
 }
 
 .chat-pending-attachment-name {
@@ -2173,7 +2397,7 @@ watch(activeSessionId, () => {
 }
 
 .chat-pending-attachment-remove {
-  @apply inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-xl text-gray-400 transition hover:bg-black/5 hover:text-gray-900 dark:hover:bg-white/5 dark:hover:text-white;
+  @apply inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-xl text-gray-400 transition hover:bg-gray-100 hover:text-gray-900 dark:hover:bg-dark-700 dark:hover:text-white;
 }
 
 .chat-textarea {
@@ -2181,7 +2405,7 @@ watch(activeSessionId, () => {
 }
 
 .chat-composer-footer {
-  @apply flex flex-col gap-3 border-t border-black/5 px-2 pt-3 dark:border-white/10 lg:flex-row lg:items-center lg:justify-between;
+  @apply flex flex-col gap-3 border-t border-gray-200 px-2 pt-3 dark:border-dark-700 lg:flex-row lg:items-center lg:justify-between;
 }
 
 .chat-composer-meta {
@@ -2193,11 +2417,11 @@ watch(activeSessionId, () => {
 }
 
 .chat-secondary-button {
-  @apply inline-flex items-center gap-2 rounded-full border border-black/5 bg-white px-4 py-2 text-sm font-medium text-gray-700 transition hover:border-black/10 hover:text-gray-900 disabled:cursor-not-allowed disabled:opacity-50 dark:border-white/10 dark:bg-white/[0.04] dark:text-gray-200 dark:hover:bg-white/[0.08] dark:hover:text-white;
+  @apply inline-flex items-center gap-2 rounded-full border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-700 transition hover:border-primary-200 hover:text-gray-900 disabled:cursor-not-allowed disabled:opacity-50 dark:border-dark-700 dark:bg-dark-900 dark:text-gray-200 dark:hover:bg-dark-800 dark:hover:text-white;
 }
 
 .chat-send-button {
-  @apply inline-flex items-center gap-2 rounded-full bg-[#202123] px-4 py-2 text-sm font-medium text-white transition hover:bg-black disabled:cursor-not-allowed disabled:opacity-50 dark:bg-white dark:text-[#111214] dark:hover:bg-white/90;
+  @apply inline-flex items-center gap-2 rounded-full bg-primary-500 px-4 py-2 text-sm font-medium text-white transition hover:bg-primary-600 disabled:cursor-not-allowed disabled:opacity-50;
 }
 
 @media (max-width: 1023px) {

@@ -3,6 +3,7 @@ package handler
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -91,6 +92,10 @@ func (h *UserChatHandler) resolveChatGroup(ctx context.Context, userID int64, re
 }
 
 func (h *UserChatHandler) prepareGatewayContext(c *gin.Context, apiKey *service.APIKey, group *service.Group) error {
+	return h.prepareGatewayContextWithEndpoint(c, apiKey, group, EndpointChatCompletions)
+}
+
+func (h *UserChatHandler) prepareGatewayContextWithEndpoint(c *gin.Context, apiKey *service.APIKey, group *service.Group, inboundEndpoint string) error {
 	if apiKey == nil || apiKey.User == nil || group == nil {
 		return service.ErrAPIKeyNotFound
 	}
@@ -107,7 +112,7 @@ func (h *UserChatHandler) prepareGatewayContext(c *gin.Context, apiKey *service.
 		Concurrency: apiKey.User.Concurrency,
 	})
 	c.Set(string(middleware2.ContextKeyUserRole), apiKey.User.Role)
-	c.Set(ctxKeyInboundEndpoint, EndpointChatCompletions)
+	c.Set(ctxKeyInboundEndpoint, inboundEndpoint)
 
 	if group.IsSubscriptionType() && h.subscriptionService != nil {
 		subscription, err := h.subscriptionService.GetActiveSubscription(c.Request.Context(), apiKey.UserID, group.ID)
@@ -121,6 +126,32 @@ func (h *UserChatHandler) prepareGatewayContext(c *gin.Context, apiKey *service.
 	c.Request = c.Request.WithContext(ctx)
 	_ = h.apiKeyService.TouchLastUsed(c.Request.Context(), apiKey.ID)
 	return nil
+}
+
+func isGeminiImageGenerationModel(model string) bool {
+	lower := strings.ToLower(strings.TrimSpace(model))
+	return strings.HasPrefix(lower, "gemini-") && strings.Contains(lower, "-image")
+}
+
+func buildGeminiImageGenerationPayload(prompt string) []byte {
+	payload := map[string]any{
+		"contents": []map[string]any{
+			{
+				"role": "user",
+				"parts": []map[string]any{
+					{"text": prompt},
+				},
+			},
+		},
+		"generationConfig": map[string]any{
+			"responseModalities": []string{"TEXT", "IMAGE"},
+			"imageConfig": map[string]any{
+				"aspectRatio": "1:1",
+			},
+		},
+	}
+	bytes, _ := json.Marshal(payload)
+	return bytes
 }
 
 func parseOptionalGroupID(raw string) (*int64, error) {
@@ -240,4 +271,99 @@ func (h *UserChatHandler) ChatCompletions(c *gin.Context) {
 	}
 
 	h.gatewayHandler.ChatCompletions(c)
+}
+
+func (h *UserChatHandler) Images(c *gin.Context) {
+	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	if !ok {
+		response.Unauthorized(c, "User not authenticated")
+		return
+	}
+
+	body, err := pkghttputil.ReadRequestBodyWithPrealloc(c.Request)
+	if err != nil {
+		response.BadRequest(c, "Failed to read request body")
+		return
+	}
+	c.Request.Body = io.NopCloser(bytes.NewReader(body))
+
+	groupIDResult := gjson.GetBytes(body, "group_id")
+	var requestedGroupID *int64
+	if groupIDResult.Exists() {
+		value := groupIDResult.Int()
+		if value <= 0 {
+			response.BadRequest(c, "Invalid group_id")
+			return
+		}
+		requestedGroupID = &value
+	}
+
+	model := strings.TrimSpace(gjson.GetBytes(body, "model").String())
+	prompt := strings.TrimSpace(gjson.GetBytes(body, "prompt").String())
+	if prompt == "" {
+		response.BadRequest(c, "prompt is required")
+		return
+	}
+
+	group, err := h.resolveChatGroup(c.Request.Context(), subject.UserID, requestedGroupID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	apiKey, err := h.apiKeyService.GetOrCreateWebChatAPIKey(c.Request.Context(), subject.UserID, group.ID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	switch group.Platform {
+	case service.PlatformOpenAI:
+		if err := h.prepareGatewayContextWithEndpoint(c, apiKey, group, EndpointImagesGenerations); err != nil {
+			response.ErrorFrom(c, err)
+			return
+		}
+
+		payload := map[string]any{
+			"model":  strings.TrimSpace(model),
+			"prompt": prompt,
+			"n":      1,
+		}
+		payloadBytes, _ := json.Marshal(payload)
+		c.Request.Body = io.NopCloser(bytes.NewReader(payloadBytes))
+		c.Request.ContentLength = int64(len(payloadBytes))
+		c.Request.Header.Set("Content-Type", "application/json")
+		c.Request.URL.Path = EndpointImagesGenerations
+		c.Set(ctxKeyInboundEndpoint, EndpointImagesGenerations)
+		h.openAIGateway.Images(c)
+		return
+
+	case service.PlatformAntigravity:
+		if !isGeminiImageGenerationModel(model) {
+			response.BadRequest(c, "Selected model does not support image generation")
+			return
+		}
+		if err := h.prepareGatewayContextWithEndpoint(c, apiKey, group, EndpointGeminiModels); err != nil {
+			response.ErrorFrom(c, err)
+			return
+		}
+
+		payloadBytes := buildGeminiImageGenerationPayload(prompt)
+		c.Request.Body = io.NopCloser(bytes.NewReader(payloadBytes))
+		c.Request.ContentLength = int64(len(payloadBytes))
+		c.Request.Header.Set("Content-Type", "application/json")
+		c.Request.URL.Path = fmt.Sprintf("/antigravity/v1beta/models/%s:streamGenerateContent", model)
+		c.Request.URL.RawQuery = "alt=sse"
+		c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), ctxkey.ForcePlatform, service.PlatformAntigravity))
+		c.Set(string(middleware2.ContextKeyForcePlatform), service.PlatformAntigravity)
+		c.Set(ctxKeyInboundEndpoint, EndpointGeminiModels)
+		c.Params = gin.Params{
+			{Key: "modelAction", Value: "/" + model + ":streamGenerateContent"},
+		}
+		h.gatewayHandler.GeminiV1BetaModels(c)
+		return
+
+	default:
+		response.BadRequest(c, "Image generation is not supported for this group")
+	}
 }
