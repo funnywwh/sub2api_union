@@ -15,9 +15,20 @@ interface ChatModelListResponse {
   data?: ChatModel[]
 }
 
+export interface UserChatImageURL {
+  url: string
+  detail?: 'auto' | 'low' | 'high'
+}
+
+export interface UserChatContentPart {
+  type: 'text' | 'image_url'
+  text?: string
+  image_url?: UserChatImageURL
+}
+
 export interface UserChatMessagePayload {
   role: 'system' | 'user' | 'assistant'
-  content: string
+  content: string | UserChatContentPart[]
 }
 
 interface ChatCompletionResponse {
@@ -95,6 +106,8 @@ function normalizeContent(content: unknown): string {
       }
 
       const record = part as Record<string, unknown>
+      const type = typeof record.type === 'string' ? record.type : ''
+
       if (typeof record.text === 'string') {
         return record.text
       }
@@ -107,6 +120,28 @@ function normalizeContent(content: unknown): string {
       if (typeof record.content === 'string') {
         return record.content
       }
+
+      const nestedImageURL = record.image_url && typeof record.image_url === 'object'
+        ? (record.image_url as Record<string, unknown>).url
+        : null
+      const imageURL = typeof record.image_url === 'string'
+        ? record.image_url
+        : typeof nestedImageURL === 'string'
+          ? nestedImageURL
+          : ''
+      if (imageURL) {
+        return `\n![${type || 'image'}](${imageURL})\n`
+      }
+
+      const fileURL = [
+        record.download_url,
+        record.file_url,
+        record.url
+      ].find((value): value is string => typeof value === 'string' && value.trim().length > 0) || ''
+      if (fileURL) {
+        return `\n[${type || 'attachment'}](${fileURL})\n`
+      }
+
       return ''
     })
     .join('')

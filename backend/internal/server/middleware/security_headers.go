@@ -20,6 +20,12 @@ const (
 	CloudflareInsightsDomain = "https://static.cloudflareinsights.com"
 	// StripeDomain is the domain for Stripe.js SDK
 	StripeDomain = "https://*.stripe.com"
+	// JSDelivrDomain allows on-demand ESM utilities such as PDF/PPT parsers loaded in the browser.
+	JSDelivrDomain = "https://cdn.jsdelivr.net"
+	// OfficeViewerDomain allows embedded preview for Office documents.
+	OfficeViewerDomain = "https://view.officeapps.live.com"
+	// BlobScheme allows local browser object URLs for iframe/worker previews.
+	BlobScheme = "blob:"
 )
 
 // GenerateNonce generates a cryptographically secure random nonce.
@@ -118,6 +124,30 @@ func enhanceCSPPolicy(policy string) string {
 	if !strings.Contains(policy, "stripe.com") {
 		policy = addToDirective(policy, "script-src", StripeDomain)
 		policy = addToDirective(policy, "frame-src", StripeDomain)
+	}
+
+	if !strings.Contains(policy, "frame-src 'self'") {
+		policy = addToDirective(policy, "frame-src", "'self'")
+	}
+
+	if !strings.Contains(policy, "worker-src 'self'") {
+		policy = addToDirective(policy, "worker-src", "'self'")
+	}
+
+	if !strings.Contains(policy, JSDelivrDomain) {
+		policy = addToDirective(policy, "script-src", JSDelivrDomain)
+		policy = addToDirective(policy, "worker-src", JSDelivrDomain)
+	}
+
+	if !strings.Contains(policy, BlobScheme) {
+		policy = addToDirective(policy, "img-src", BlobScheme)
+		policy = addToDirective(policy, "connect-src", BlobScheme)
+		policy = addToDirective(policy, "frame-src", BlobScheme)
+		policy = addToDirective(policy, "worker-src", BlobScheme)
+	}
+
+	if !strings.Contains(policy, OfficeViewerDomain) {
+		policy = addToDirective(policy, "frame-src", OfficeViewerDomain)
 	}
 
 	return policy

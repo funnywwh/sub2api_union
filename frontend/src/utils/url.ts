@@ -7,6 +7,7 @@
 type SanitizeOptions = {
   allowRelative?: boolean
   allowDataUrl?: boolean
+  allowBlobUrl?: boolean
 }
 
 export function sanitizeUrl(value: string, options: SanitizeOptions = {}): string {
@@ -21,6 +22,10 @@ export function sanitizeUrl(value: string, options: SanitizeOptions = {}): strin
 
   // 允许 data:image/ 开头的 data URL（仅限图片类型）
   if (options.allowDataUrl && trimmed.startsWith('data:image/')) {
+    return trimmed
+  }
+
+  if (options.allowBlobUrl && trimmed.startsWith('blob:')) {
     return trimmed
   }
 
