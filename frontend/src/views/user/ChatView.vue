@@ -1933,7 +1933,7 @@ watch(activeSessionId, () => {
 }
 
 .chat-session-item {
-  @apply group flex items-start gap-2 rounded-2xl border border-transparent bg-white/80 px-3 py-3 shadow-sm transition hover:border-black/5 hover:bg-white dark:bg-white/[0.04] dark:hover:border-white/10 dark:hover:bg-white/[0.07];
+  @apply flex items-start gap-2 rounded-2xl border border-transparent bg-white/80 px-3 py-3 shadow-sm transition hover:border-black/5 hover:bg-white dark:bg-white/[0.04] dark:hover:border-white/10 dark:hover:bg-white/[0.07];
 }
 
 .chat-session-item-active {
