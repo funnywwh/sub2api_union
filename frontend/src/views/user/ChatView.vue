@@ -523,6 +523,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import ChatRichContent from '@/components/chat/ChatRichContent.vue'
+import type { ExplicitChatDocumentAssetInput } from '@/components/chat/chatRichContent'
 import { Icon } from '@/components/icons'
 import { useAppStore, useAuthStore } from '@/stores'
 import { userGroupsAPI } from '@/api'
@@ -1177,7 +1178,9 @@ function attachmentBadgeLabel(kind: ChatAttachmentKind): string {
   }
 }
 
-function buildRenderableAttachmentAssets(attachments: ChatAttachment[] = []) {
+function buildRenderableAttachmentAssets(
+  attachments: ChatAttachment[] = []
+): ExplicitChatDocumentAssetInput[] {
   return attachments
     .filter((attachment) => attachment.kind === 'pdf' || attachment.kind === 'presentation' || attachment.kind === 'document')
     .map((attachment) => ({
