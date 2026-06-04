@@ -71,6 +71,33 @@ func mergeOpenAIResponsesImageMeta(dst *openAIResponsesImageResult, src openAIRe
 	}
 }
 
+func extractOpenAIResponsesImageResultFromObject(item gjson.Result) (openAIResponsesImageResult, bool) {
+	if !item.Exists() || !item.IsObject() {
+		return openAIResponsesImageResult{}, false
+	}
+
+	result := strings.TrimSpace(item.Get("result").String())
+	for _, path := range []string{"b64_json", "image_b64", "image_base64", "output.image_b64", "output.result"} {
+		if result != "" {
+			break
+		}
+		result = strings.TrimSpace(item.Get(path).String())
+	}
+	if result == "" {
+		return openAIResponsesImageResult{}, false
+	}
+
+	return openAIResponsesImageResult{
+		Result:        result,
+		RevisedPrompt: strings.TrimSpace(item.Get("revised_prompt").String()),
+		OutputFormat:  strings.TrimSpace(item.Get("output_format").String()),
+		Size:          strings.TrimSpace(item.Get("size").String()),
+		Background:    strings.TrimSpace(item.Get("background").String()),
+		Quality:       strings.TrimSpace(item.Get("quality").String()),
+		Model:         strings.TrimSpace(item.Get("model").String()),
+	}, true
+}
+
 func extractOpenAIResponsesImageMetaFromLifecycleEvent(payload []byte) (openAIResponsesImageResult, int64, bool) {
 	switch gjson.GetBytes(payload, "type").String() {
 	case "response.created", "response.in_progress", "response.completed":
@@ -305,17 +332,9 @@ func extractOpenAIImagesFromResponsesCompleted(payload []byte) ([]openAIResponse
 			if item.Get("type").String() != "image_generation_call" {
 				continue
 			}
-			result := strings.TrimSpace(item.Get("result").String())
-			if result == "" {
+			entry, ok := extractOpenAIResponsesImageResultFromObject(item)
+			if !ok {
 				continue
-			}
-			entry := openAIResponsesImageResult{
-				Result:        result,
-				RevisedPrompt: strings.TrimSpace(item.Get("revised_prompt").String()),
-				OutputFormat:  strings.TrimSpace(item.Get("output_format").String()),
-				Size:          strings.TrimSpace(item.Get("size").String()),
-				Background:    strings.TrimSpace(item.Get("background").String()),
-				Quality:       strings.TrimSpace(item.Get("quality").String()),
 			}
 			if len(results) == 0 {
 				firstMeta = entry
@@ -341,20 +360,67 @@ func extractOpenAIImageFromResponsesOutputItemDone(payload []byte) (openAIRespon
 		return openAIResponsesImageResult{}, "", false, nil
 	}
 
-	result := strings.TrimSpace(item.Get("result").String())
-	if result == "" {
+	entry, ok := extractOpenAIResponsesImageResultFromObject(item)
+	if !ok {
 		return openAIResponsesImageResult{}, "", false, nil
 	}
 
-	entry := openAIResponsesImageResult{
-		Result:        result,
-		RevisedPrompt: strings.TrimSpace(item.Get("revised_prompt").String()),
-		OutputFormat:  strings.TrimSpace(item.Get("output_format").String()),
-		Size:          strings.TrimSpace(item.Get("size").String()),
-		Background:    strings.TrimSpace(item.Get("background").String()),
-		Quality:       strings.TrimSpace(item.Get("quality").String()),
-	}
 	return entry, strings.TrimSpace(item.Get("id").String()), true, nil
+}
+
+func extractOpenAIImageFromResponsesImageGenerationCallEvent(payload []byte) (openAIResponsesImageResult, string, bool, error) {
+	eventType := gjson.GetBytes(payload, "type").String()
+	switch eventType {
+	case "response.image_generation_call.completed", "response.image_generation_call.done":
+	default:
+		return openAIResponsesImageResult{}, "", false, nil
+	}
+
+	root := gjson.ParseBytes(payload)
+	result, ok := extractOpenAIResponsesImageResultFromObject(root)
+	if !ok {
+		return openAIResponsesImageResult{}, "", false, nil
+	}
+
+	itemID := strings.TrimSpace(root.Get("id").String())
+	if itemID == "" {
+		itemID = strings.TrimSpace(root.Get("item_id").String())
+	}
+	if itemID == "" {
+		itemID = strings.TrimSpace(root.Get("output_item_id").String())
+	}
+	return result, itemID, true, nil
+}
+
+func extractOpenAIImagesResponsesTerminalError(payload []byte) string {
+	if len(payload) == 0 || !gjson.ValidBytes(payload) {
+		return ""
+	}
+	eventType := strings.TrimSpace(gjson.GetBytes(payload, "type").String())
+	switch eventType {
+	case "response.failed", "response.incomplete", "response.cancelled", "response.canceled":
+	default:
+		return ""
+	}
+
+	for _, path := range []string{
+		"response.error.message",
+		"response.incomplete_details.reason",
+		"error.message",
+		"message",
+	} {
+		if msg := sanitizeUpstreamErrorMessage(strings.TrimSpace(gjson.GetBytes(payload, path).String())); msg != "" {
+			return msg
+		}
+	}
+	switch eventType {
+	case "response.incomplete":
+		return "upstream response incomplete"
+	case "response.cancelled", "response.canceled":
+		return "upstream response cancelled"
+	default:
+		return "upstream response failed"
+	}
 }
 
 func collectOpenAIImagesFromResponsesBody(body []byte) ([]openAIResponsesImageResult, int64, []byte, openAIResponsesImageResult, bool, error) {
@@ -383,8 +449,20 @@ func collectOpenAIImagesFromResponsesBody(body []byte) ([]openAIResponsesImageRe
 				createdAt = eventCreatedAt
 			}
 		}
+		if terminalErr := extractOpenAIImagesResponsesTerminalError(payload); terminalErr != "" {
+			return nil, createdAt, usageRaw, openAIResponsesImageResult{}, false, fmt.Errorf("upstream response failed: %s", terminalErr)
+		}
 
 		switch gjson.GetBytes(payload, "type").String() {
+		case "response.image_generation_call.completed", "response.image_generation_call.done":
+			result, itemID, ok, err := extractOpenAIImageFromResponsesImageGenerationCallEvent(payload)
+			if err != nil {
+				return nil, 0, nil, openAIResponsesImageResult{}, false, err
+			}
+			if ok {
+				mergeOpenAIResponsesImageMeta(&result, responseMeta)
+				appendOpenAIResponsesImageResultDedup(&fallbackResults, fallbackSeen, itemID, result)
+			}
 		case "response.output_item.done":
 			result, itemID, ok, err := extractOpenAIImageFromResponsesOutputItemDone(payload)
 			if err != nil {
@@ -599,6 +677,11 @@ func (s *OpenAIGatewayService) handleOpenAIImagesOAuthStreamingResponse(
 							createdAt = eventCreatedAt
 						}
 					}
+					if terminalErr := extractOpenAIImagesResponsesTerminalError(dataBytes); terminalErr != "" {
+						err = fmt.Errorf("upstream response failed: %s", terminalErr)
+						_ = s.writeOpenAIImagesStreamEvent(c, flusher, "error", buildOpenAIImagesStreamErrorBody(err.Error()))
+						return OpenAIUsage{}, imageCount, firstTokenMs, err
+					}
 					switch gjson.GetBytes(dataBytes, "type").String() {
 					case "response.image_generation_call.partial_image":
 						b64 := strings.TrimSpace(gjson.GetBytes(dataBytes, "partial_image_b64").String())
@@ -623,6 +706,26 @@ func (s *OpenAIGatewayService) handleOpenAIImagesOAuthStreamingResponse(
 						}
 					case "response.output_item.done":
 						img, itemID, ok, extractErr := extractOpenAIImageFromResponsesOutputItemDone(dataBytes)
+						if extractErr != nil {
+							_ = s.writeOpenAIImagesStreamEvent(c, flusher, "error", buildOpenAIImagesStreamErrorBody(extractErr.Error()))
+							return OpenAIUsage{}, imageCount, firstTokenMs, extractErr
+						}
+						if !ok {
+							break
+						}
+						mergeOpenAIResponsesImageMeta(&streamMeta, img)
+						mergeOpenAIResponsesImageMeta(&img, streamMeta)
+						key := openAIResponsesImageResultKey(itemID, img)
+						if _, exists := emitted[key]; exists {
+							break
+						}
+						if _, exists := pendingSeen[key]; exists {
+							break
+						}
+						pendingSeen[key] = struct{}{}
+						pendingResults = append(pendingResults, img)
+					case "response.image_generation_call.completed", "response.image_generation_call.done":
+						img, itemID, ok, extractErr := extractOpenAIImageFromResponsesImageGenerationCallEvent(dataBytes)
 						if extractErr != nil {
 							_ = s.writeOpenAIImagesStreamEvent(c, flusher, "error", buildOpenAIImagesStreamErrorBody(extractErr.Error()))
 							return OpenAIUsage{}, imageCount, firstTokenMs, extractErr

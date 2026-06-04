@@ -499,17 +499,25 @@ async function handleVerify(): Promise<void> {
     }
 
     if (isPendingOAuthFlow()) {
+      const pendingOAuthPayload: Record<string, unknown> = {
+        email: email.value,
+        password: password.value,
+        verify_code: verifyCode.value.trim(),
+        ...oauthAffiliatePayload(affCode.value || loadAffiliateReferralCode())
+      }
+      if (invitationCode.value) {
+        pendingOAuthPayload.invitation_code = invitationCode.value
+      }
+      if (typeof pendingAdoptionDecision.value?.adoptDisplayName === 'boolean') {
+        pendingOAuthPayload.adopt_display_name = pendingAdoptionDecision.value.adoptDisplayName
+      }
+      if (typeof pendingAdoptionDecision.value?.adoptAvatar === 'boolean') {
+        pendingOAuthPayload.adopt_avatar = pendingAdoptionDecision.value.adoptAvatar
+      }
+
       const { data } = await apiClient.post<PendingOAuthCreateAccountResponse>(
         '/auth/oauth/pending/create-account',
-        {
-          email: email.value,
-          password: password.value,
-          verify_code: verifyCode.value.trim(),
-          invitation_code: invitationCode.value || undefined,
-          ...oauthAffiliatePayload(affCode.value || loadAffiliateReferralCode()),
-          adopt_display_name: pendingAdoptionDecision.value?.adoptDisplayName,
-          adopt_avatar: pendingAdoptionDecision.value?.adoptAvatar
-        }
+        pendingOAuthPayload
       )
       if (isPendingOAuthSessionResponse(data)) {
         sessionStorage.removeItem('register_data')

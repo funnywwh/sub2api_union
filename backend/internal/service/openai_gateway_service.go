@@ -4642,19 +4642,24 @@ func extractImageGenerationOutputFromSSEData(data []byte, seen map[string]struct
 	if len(data) == 0 || !gjson.ValidBytes(data) {
 		return nil, false
 	}
-	if gjson.GetBytes(data, "type").String() != "response.output_item.done" {
+
+	eventType := gjson.GetBytes(data, "type").String()
+	var item gjson.Result
+	switch eventType {
+	case "response.output_item.done":
+		item = gjson.GetBytes(data, "item")
+		if !item.Exists() || !item.IsObject() || item.Get("type").String() != "image_generation_call" {
+			return nil, false
+		}
+	case "response.image_generation_call.completed", "response.image_generation_call.done":
+		item = gjson.ParseBytes(data)
+	default:
 		return nil, false
 	}
-	item := gjson.GetBytes(data, "item")
-	if !item.Exists() || !item.IsObject() || item.Get("type").String() != "image_generation_call" {
+
+	output, key, ok := buildImageGenerationOutputFromSSEItem(item)
+	if !ok {
 		return nil, false
-	}
-	if strings.TrimSpace(item.Get("result").String()) == "" {
-		return nil, false
-	}
-	key := strings.TrimSpace(item.Get("id").String())
-	if key == "" {
-		key = strings.TrimSpace(item.Get("output_format").String()) + "|" + strings.TrimSpace(item.Get("result").String())
 	}
 	if key != "" && seen != nil {
 		if _, exists := seen[key]; exists {
@@ -4662,7 +4667,40 @@ func extractImageGenerationOutputFromSSEData(data []byte, seen map[string]struct
 		}
 		seen[key] = struct{}{}
 	}
-	return json.RawMessage(item.Raw), true
+	return output, true
+}
+
+func buildImageGenerationOutputFromSSEItem(item gjson.Result) (json.RawMessage, string, bool) {
+	result, ok := extractOpenAIResponsesImageResultFromObject(item)
+	if !ok {
+		return nil, "", false
+	}
+
+	raw := []byte(`{"type":"image_generation_call","result":""}`)
+	raw, _ = sjson.SetBytes(raw, "result", result.Result)
+	for _, field := range []struct {
+		path  string
+		value string
+	}{
+		{path: "id", value: firstNonEmptyString(item.Get("id").String(), item.Get("item_id").String(), item.Get("output_item_id").String())},
+		{path: "status", value: firstNonEmptyString(item.Get("status").String(), "completed")},
+		{path: "revised_prompt", value: result.RevisedPrompt},
+		{path: "output_format", value: result.OutputFormat},
+		{path: "size", value: result.Size},
+		{path: "background", value: result.Background},
+		{path: "quality", value: result.Quality},
+		{path: "model", value: result.Model},
+	} {
+		if strings.TrimSpace(field.value) != "" {
+			raw, _ = sjson.SetBytes(raw, field.path, strings.TrimSpace(field.value))
+		}
+	}
+
+	key := strings.TrimSpace(item.Get("id").String())
+	if key == "" {
+		key = strings.TrimSpace(result.OutputFormat) + "|" + strings.TrimSpace(result.Result)
+	}
+	return json.RawMessage(raw), key, true
 }
 
 func (s *OpenAIGatewayService) parseSSEUsageFromBody(body string) *OpenAIUsage {

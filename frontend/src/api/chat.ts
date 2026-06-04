@@ -203,42 +203,171 @@ function extractResponseText(payload: ChatCompletionResponse): string {
   return normalizeContent(payload.choices?.[0]?.message?.content)
 }
 
+function mimeTypeFromImageFormat(format: unknown): string {
+  const normalized = typeof format === 'string' ? format.trim().toLowerCase() : ''
+  if (!normalized) {
+    return 'image/png'
+  }
+  if (normalized.startsWith('image/')) {
+    return normalized
+  }
+  switch (normalized) {
+    case 'jpg':
+    case 'jpeg':
+      return 'image/jpeg'
+    case 'webp':
+      return 'image/webp'
+    case 'png':
+      return 'image/png'
+    default:
+      return 'image/png'
+  }
+}
+
+function mimeTypeFromImageURL(url: string, fallbackFormat?: unknown): string {
+  const dataURLMatch = url.match(/^data:([^;,]+)[;,]/i)
+  if (dataURLMatch?.[1]) {
+    return dataURLMatch[1].toLowerCase()
+  }
+  return mimeTypeFromImageFormat(fallbackFormat)
+}
+
+function appendGeneratedImage(
+  result: GenerateUserChatImagesResult,
+  seenImageUrls: Set<string>,
+  url: string,
+  mimeType: string
+): boolean {
+  const trimmedURL = url.trim()
+  if (!trimmedURL || seenImageUrls.has(trimmedURL)) {
+    return false
+  }
+  seenImageUrls.add(trimmedURL)
+  result.images.push({ url: trimmedURL, mimeType })
+  return true
+}
+
+function appendOpenAIRevisedPrompt(result: GenerateUserChatImagesResult, prompt: string) {
+  const revisedPrompt = prompt.trim()
+  if (!revisedPrompt) {
+    return
+  }
+  result.text = `${result.text}\n\n${revisedPrompt}`.trim()
+}
+
+function appendOpenAIImageRecord(
+  record: Record<string, unknown>,
+  result: GenerateUserChatImagesResult,
+  seenImageUrls: Set<string>,
+  fallbackFormat?: unknown
+) {
+  const revisedPrompt = typeof record.revised_prompt === 'string' ? record.revised_prompt.trim() : ''
+  const outputFormat = record.output_format ?? fallbackFormat
+
+  if (typeof record.url === 'string' && record.url.trim()) {
+    const appended = appendGeneratedImage(
+      result,
+      seenImageUrls,
+      record.url,
+      mimeTypeFromImageURL(record.url, outputFormat)
+    )
+    if (appended) {
+      appendOpenAIRevisedPrompt(result, revisedPrompt)
+    }
+    return
+  }
+
+  const base64Image = typeof record.b64_json === 'string' && record.b64_json.trim()
+    ? record.b64_json.trim()
+    : typeof record.result === 'string'
+      ? record.result.trim()
+      : ''
+
+  if (base64Image) {
+    const mimeType = mimeTypeFromImageFormat(outputFormat)
+    const appended = appendGeneratedImage(
+      result,
+      seenImageUrls,
+      `data:${mimeType};base64,${base64Image}`,
+      mimeType
+    )
+    if (appended) {
+      appendOpenAIRevisedPrompt(result, revisedPrompt)
+    }
+    return
+  }
+
+  appendOpenAIRevisedPrompt(result, revisedPrompt)
+}
+
+function getNestedString(record: Record<string, unknown>, path: string[]): string {
+  let current: unknown = record
+  for (const segment of path) {
+    if (!current || typeof current !== 'object') {
+      return ''
+    }
+    current = (current as Record<string, unknown>)[segment]
+  }
+  return typeof current === 'string' ? current.trim() : ''
+}
+
+function extractImageEventErrorMessage(payload: Record<string, unknown>): string {
+  const directError = payload.error
+  if (directError && typeof directError === 'object') {
+    const rawMessage = (directError as Record<string, unknown>).message
+    const message = typeof rawMessage === 'string' ? rawMessage.trim() : ''
+    return message || 'Image generation failed'
+  }
+
+  const eventType = typeof payload.type === 'string' ? payload.type : ''
+  if (
+    eventType !== 'response.failed' &&
+    eventType !== 'response.incomplete' &&
+    eventType !== 'response.cancelled' &&
+    eventType !== 'response.canceled'
+  ) {
+    return ''
+  }
+
+  for (const path of [
+    ['response', 'error', 'message'],
+    ['response', 'incomplete_details', 'reason'],
+    ['message']
+  ]) {
+    const message = getNestedString(payload, path)
+    if (message) {
+      return message
+    }
+  }
+
+  switch (eventType) {
+    case 'response.failed':
+      return 'Image generation failed'
+    case 'response.incomplete':
+      return 'Image generation incomplete'
+    case 'response.cancelled':
+    case 'response.canceled':
+      return 'Image generation cancelled'
+    default:
+      return ''
+  }
+}
+
 function extractOpenAIImageResult(payload: Record<string, unknown>): GenerateUserChatImagesResult {
-  const images: UserChatGeneratedImage[] = []
-  const texts: string[] = []
+  const result: GenerateUserChatImagesResult = { images: [], text: '' }
+  const seenImageUrls = new Set<string>()
   const data = Array.isArray(payload.data) ? payload.data : []
+  const fallbackFormat = payload.output_format
 
   for (const item of data) {
     if (!item || typeof item !== 'object') {
       continue
     }
 
-    const record = item as Record<string, unknown>
-    const revisedPrompt = typeof record.revised_prompt === 'string' ? record.revised_prompt.trim() : ''
-    if (revisedPrompt) {
-      texts.push(revisedPrompt)
-    }
-
-    if (typeof record.url === 'string' && record.url.trim()) {
-      images.push({
-        url: record.url.trim(),
-        mimeType: 'image/*'
-      })
-      continue
-    }
-
-    if (typeof record.b64_json === 'string' && record.b64_json.trim()) {
-      images.push({
-        url: `data:image/png;base64,${record.b64_json.trim()}`,
-        mimeType: 'image/png'
-      })
-    }
+    appendOpenAIImageRecord(item as Record<string, unknown>, result, seenImageUrls, fallbackFormat)
   }
 
-  return {
-    images,
-    text: texts.join('\n\n').trim()
-  }
+  return result
 }
 
 function appendGeminiContentPart(
@@ -277,11 +406,8 @@ function processGeminiEvent(
   result: GenerateUserChatImagesResult,
   seenImageUrls: Set<string>
 ) {
-  const error = payload.error
-  if (error && typeof error === 'object') {
-    const message = typeof (error as Record<string, unknown>).message === 'string'
-      ? (error as Record<string, unknown>).message as string
-      : 'Image generation failed'
+  const message = extractImageEventErrorMessage(payload)
+  if (message) {
     throw new UserChatRequestError(500, message)
   }
 
@@ -310,6 +436,58 @@ function processGeminiEvent(
         continue
       }
       appendGeminiContentPart(part as Record<string, unknown>, result, seenImageUrls)
+    }
+  }
+}
+
+function processOpenAIImageEvent(
+  payload: Record<string, unknown>,
+  result: GenerateUserChatImagesResult,
+  seenImageUrls: Set<string>
+) {
+  const message = extractImageEventErrorMessage(payload)
+  if (message) {
+    throw new UserChatRequestError(500, message)
+  }
+
+  const type = typeof payload.type === 'string' ? payload.type : ''
+  if (
+    type === 'image_generation.completed' ||
+    type === 'image_edit.completed' ||
+    type === 'response.image_generation_call.completed' ||
+    type === 'response.image_generation_call.done'
+  ) {
+    appendOpenAIImageRecord(payload, result, seenImageUrls)
+    return
+  }
+
+  if (type === 'response.output_item.done') {
+    const item = payload.item
+    if (item && typeof item === 'object') {
+      const record = item as Record<string, unknown>
+      if (record.type === 'image_generation_call') {
+        appendOpenAIImageRecord(record, result, seenImageUrls)
+      }
+    }
+    return
+  }
+
+  if (type === 'response.completed') {
+    const response = payload.response
+    const output = response && typeof response === 'object'
+      ? (response as Record<string, unknown>).output
+      : null
+    if (!Array.isArray(output)) {
+      return
+    }
+    for (const item of output) {
+      if (!item || typeof item !== 'object') {
+        continue
+      }
+      const record = item as Record<string, unknown>
+      if (record.type === 'image_generation_call') {
+        appendOpenAIImageRecord(record, result, seenImageUrls)
+      }
     }
   }
 }
@@ -473,6 +651,17 @@ export async function generateUserChatImages(
       }
 
       const payload = JSON.parse(data) as Record<string, unknown>
+      processOpenAIImageEvent(payload, result, seenImageUrls)
+      processGeminiEvent(payload, result, seenImageUrls)
+    }
+  }
+
+  const tail = buffer.trim()
+  if (tail) {
+    const data = parseSSEData(tail)
+    if (data && data !== '[DONE]') {
+      const payload = JSON.parse(data) as Record<string, unknown>
+      processOpenAIImageEvent(payload, result, seenImageUrls)
       processGeminiEvent(payload, result, seenImageUrls)
     }
   }

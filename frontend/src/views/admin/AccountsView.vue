@@ -354,6 +354,7 @@ import ErrorPassthroughRulesModal from '@/components/admin/ErrorPassthroughRules
 import TLSFingerprintProfilesModal from '@/components/admin/TLSFingerprintProfilesModal.vue'
 import { buildOpenAIUsageRefreshKey } from '@/utils/accountUsageRefresh'
 import { formatDateTime, formatRelativeTime } from '@/utils/format'
+import { resolveOpenAICompactState } from '@/utils/openaiCompactState'
 import type { Account, AccountPlatform, AccountType, Proxy as AccountProxy, AdminGroup, WindowStats, ClaudeModel } from '@/types'
 
 const { t } = useI18n()
@@ -939,20 +940,8 @@ function getAntigravityTierLabel(row: any): string | null {
   }
 }
 
-function getOpenAICompactState(row: any): 'supported' | 'unsupported' | 'unknown' | null {
-  if (row.platform !== 'openai' || (row.type !== 'oauth' && row.type !== 'apikey')) return null
-  const extra = row.extra as Record<string, unknown> | undefined
-  const mode = typeof extra?.openai_compact_mode === 'string' ? extra.openai_compact_mode : 'auto'
-  if (mode === 'force_on') return 'supported'
-  if (mode === 'force_off') return 'unsupported'
-  if (typeof extra?.openai_compact_supported === 'boolean') {
-    return extra.openai_compact_supported ? 'supported' : 'unsupported'
-  }
-  return 'unknown'
-}
-
 function getOpenAICompactLabel(row: any): string | null {
-  switch (getOpenAICompactState(row)) {
+  switch (resolveOpenAICompactState(row)) {
     case 'supported': return t('admin.accounts.openai.compactSupported')
     case 'unsupported': return t('admin.accounts.openai.compactUnsupported')
     case 'unknown': return t('admin.accounts.openai.compactUnknown')
@@ -961,7 +950,7 @@ function getOpenAICompactLabel(row: any): string | null {
 }
 
 function getOpenAICompactClass(row: any): string {
-  switch (getOpenAICompactState(row)) {
+  switch (resolveOpenAICompactState(row)) {
     case 'supported': return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300'
     case 'unsupported': return 'bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300'
     case 'unknown': return 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
