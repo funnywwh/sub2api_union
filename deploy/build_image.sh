@@ -8,6 +8,6 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 docker build -t sub2api:latest \
     --build-arg GOPROXY=https://goproxy.cn,direct \
-    --build-arg GOSUMDB=sum.golang.google.cn \
+    --build-arg GOSUMDB=sum.golang.org \
     -f "${REPO_ROOT}/Dockerfile" \
     "${REPO_ROOT}"

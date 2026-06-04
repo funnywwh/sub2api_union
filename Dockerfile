@@ -11,7 +11,7 @@ ARG GOLANG_IMAGE=golang:1.26.2-alpine
 ARG ALPINE_IMAGE=alpine:3.21
 ARG POSTGRES_IMAGE=postgres:18-alpine
 ARG GOPROXY=https://goproxy.cn,direct
-ARG GOSUMDB=sum.golang.google.cn
+ARG GOSUMDB=sum.golang.org
 ARG NODE_OPTIONS=--max-old-space-size=4096
 
 # -----------------------------------------------------------------------------

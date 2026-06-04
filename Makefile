@@ -1,4 +1,9 @@
-.PHONY: build build-backend build-frontend build-datamanagementd test test-backend test-frontend test-frontend-critical test-datamanagementd secret-scan
+.PHONY: build build-backend build-frontend build-datamanagementd docker-export test test-backend test-frontend test-frontend-critical test-datamanagementd secret-scan
+
+DOCKER_IMAGE ?= weishaw/sub2api:latest
+DOCKER_ARCHIVE ?= sub2api.tgz
+GOPROXY ?= https://goproxy.cn,direct
+GOSUMDB ?= sum.golang.org
 
 FRONTEND_CRITICAL_VITEST := \
 	src/views/auth/__tests__/LinuxDoCallbackView.spec.ts \
@@ -22,6 +27,21 @@ build-frontend:
 # 编译 datamanagementd（宿主机数据管理进程）
 build-datamanagementd:
 	@cd datamanagement && go build -o datamanagementd ./cmd/datamanagementd
+
+# 构建并导出 Docker 镜像
+docker-export:
+	@echo "构建 Docker 镜像: $(DOCKER_IMAGE)"
+	@docker build . -t $(DOCKER_IMAGE) \
+		--build-arg GOPROXY=$(GOPROXY) \
+		--build-arg GOSUMDB=$(GOSUMDB)
+	@echo "导出 Docker 镜像: $(DOCKER_ARCHIVE)"
+	@tmp_tar="$$(mktemp .sub2api-image.XXXXXX.tar)" && \
+	tmp_gz="$$(mktemp .sub2api-image.XXXXXX.tgz)" && \
+	trap 'rm -f "$$tmp_tar" "$$tmp_gz"' EXIT && \
+	docker save -o "$$tmp_tar" $(DOCKER_IMAGE) && \
+	gzip -c "$$tmp_tar" > "$$tmp_gz" && \
+	mv "$$tmp_gz" $(DOCKER_ARCHIVE)
+	@echo "完成: $(DOCKER_ARCHIVE)"
 
 # 运行测试（后端 + 前端）
 test: test-backend test-frontend
