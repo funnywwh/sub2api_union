@@ -594,6 +594,28 @@ func (s *stubAdminService) AdminUpdateAPIKeyGroupID(ctx context.Context, keyID i
 	return nil, service.ErrAPIKeyNotFound
 }
 
+func (s *stubAdminService) AdminTransferAPIKey(ctx context.Context, keyID int64, targetUserID int64, groupID *int64, name string) (*service.AdminUpdateAPIKeyGroupIDResult, error) {
+	for i := range s.apiKeys {
+		if s.apiKeys[i].ID == keyID {
+			k := s.apiKeys[i]
+			k.UserID = targetUserID
+			if name != "" {
+				k.Name = name
+			}
+			if groupID != nil && *groupID > 0 {
+				gid := *groupID
+				k.GroupID = &gid
+			} else {
+				k.GroupID = nil
+			}
+			k.Group = nil
+			s.apiKeys[i] = k
+			return &service.AdminUpdateAPIKeyGroupIDResult{APIKey: &k}, nil
+		}
+	}
+	return nil, service.ErrAPIKeyNotFound
+}
+
 func (s *stubAdminService) ResetAccountQuota(ctx context.Context, id int64) error {
 	return nil
 }

@@ -20,6 +20,7 @@ func setupAPIKeyHandler(adminSvc service.AdminService) *gin.Engine {
 	router := gin.New()
 	h := NewAdminAPIKeyHandler(adminSvc)
 	router.PUT("/api/v1/admin/api-keys/:id", h.UpdateGroup)
+	router.POST("/api/v1/admin/api-keys/:id/transfer", h.Transfer)
 	return router
 }
 
@@ -191,6 +192,78 @@ func TestAdminAPIKeyHandler_UpdateGroup_NegativeGroupID(t *testing.T) {
 	require.Contains(t, rec.Body.String(), "INVALID_GROUP_ID")
 }
 
+func TestAdminAPIKeyHandler_Transfer_InvalidID(t *testing.T) {
+	router := setupAPIKeyHandler(newStubAdminService())
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/api-keys/abc/transfer", bytes.NewBufferString(`{"target_user_id":2}`))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Contains(t, rec.Body.String(), "Invalid API key ID")
+}
+
+func TestAdminAPIKeyHandler_Transfer_TargetUserRequired(t *testing.T) {
+	router := setupAPIKeyHandler(newStubAdminService())
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/api-keys/10/transfer", bytes.NewBufferString(`{"target_user_id":0}`))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Contains(t, rec.Body.String(), "target_user_id is required")
+}
+
+func TestAdminAPIKeyHandler_Transfer_Success(t *testing.T) {
+	svc := newStubAdminService()
+	gid := int64(2)
+	svc.apiKeys[0].GroupID = &gid
+	router := setupAPIKeyHandler(svc)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/api-keys/10/transfer", bytes.NewBufferString(`{"target_user_id":2,"group_id":2,"name":"source-user"}`))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp struct {
+		Code int `json:"code"`
+		Data struct {
+			APIKey struct {
+				ID      int64  `json:"id"`
+				UserID  int64  `json:"user_id"`
+				Name    string `json:"name"`
+				GroupID *int64 `json:"group_id"`
+			} `json:"api_key"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Equal(t, 0, resp.Code)
+	require.Equal(t, int64(10), resp.Data.APIKey.ID)
+	require.Equal(t, int64(2), resp.Data.APIKey.UserID)
+	require.Equal(t, "source-user", resp.Data.APIKey.Name)
+	require.NotNil(t, resp.Data.APIKey.GroupID)
+	require.Equal(t, int64(2), *resp.Data.APIKey.GroupID)
+}
+
+func TestAdminAPIKeyHandler_Transfer_ServiceError(t *testing.T) {
+	svc := &failingTransferService{
+		stubAdminService: newStubAdminService(),
+		err:              service.ErrUserNotFound,
+	}
+	router := setupAPIKeyHandler(svc)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/api-keys/10/transfer", bytes.NewBufferString(`{"target_user_id":404}`))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNotFound, rec.Code)
+}
+
 // failingUpdateGroupService overrides AdminUpdateAPIKeyGroupID to return an error.
 type failingUpdateGroupService struct {
 	*stubAdminService
@@ -198,5 +271,15 @@ type failingUpdateGroupService struct {
 }
 
 func (f *failingUpdateGroupService) AdminUpdateAPIKeyGroupID(_ context.Context, _ int64, _ *int64) (*service.AdminUpdateAPIKeyGroupIDResult, error) {
+	return nil, f.err
+}
+
+// failingTransferService overrides AdminTransferAPIKey to return an error.
+type failingTransferService struct {
+	*stubAdminService
+	err error
+}
+
+func (f *failingTransferService) AdminTransferAPIKey(_ context.Context, _ int64, _ int64, _ *int64, _ string) (*service.AdminUpdateAPIKeyGroupIDResult, error) {
 	return nil, f.err
 }

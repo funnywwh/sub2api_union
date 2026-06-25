@@ -35,12 +35,12 @@ docker-export:
 		--build-arg GOPROXY=$(GOPROXY) \
 		--build-arg GOSUMDB=$(GOSUMDB)
 	@echo "导出 Docker 镜像: $(DOCKER_ARCHIVE)"
-	@tmp_tar="$$(mktemp .sub2api-image.XXXXXX.tar)" && \
-	tmp_gz="$$(mktemp .sub2api-image.XXXXXX.tgz)" && \
-	trap 'rm -f "$$tmp_tar" "$$tmp_gz"' EXIT && \
-	docker save -o "$$tmp_tar" $(DOCKER_IMAGE) && \
-	gzip -c "$$tmp_tar" > "$$tmp_gz" && \
-	mv "$$tmp_gz" $(DOCKER_ARCHIVE)
+	@tmp_dir="$$(mktemp -d .sub2api-image.XXXXXX)" && \
+	tmp_tgz="$$(mktemp .sub2api-image.XXXXXX.tgz)" && \
+	trap 'rm -rf "$$tmp_dir" "$$tmp_tgz"' EXIT && \
+	docker save -o "$$tmp_dir/sub2api.tar" $(DOCKER_IMAGE) && \
+	gzip -c "$$tmp_dir/sub2api.tar" > "$$tmp_tgz" && \
+	mv "$$tmp_tgz" $(DOCKER_ARCHIVE)
 	@echo "完成: $(DOCKER_ARCHIVE)"
 
 # 运行测试（后端 + 前端）

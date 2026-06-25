@@ -13,6 +13,13 @@ export interface UpdateApiKeyGroupResult {
   granted_group_name?: string
 }
 
+export interface TransferApiKeyResult {
+  api_key: ApiKey
+  auto_granted_group_access: boolean
+  granted_group_id?: number
+  granted_group_name?: string
+}
+
 /**
  * Update an API key's group binding
  * @param id - API Key ID
@@ -26,8 +33,31 @@ export async function updateApiKeyGroup(id: number, groupId: number | null): Pro
   return data
 }
 
+/**
+ * Transfer an API key to another user.
+ * @param id - API Key ID
+ * @param targetUserId - Target user ID
+ * @param groupId - Group ID (null to leave unbound)
+ * @param name - API key name after transfer
+ * @returns Transferred API key with auto-grant info
+ */
+export async function transferApiKey(
+  id: number,
+  targetUserId: number,
+  groupId: number | null,
+  name: string
+): Promise<TransferApiKeyResult> {
+  const { data } = await apiClient.post<TransferApiKeyResult>(`/admin/api-keys/${id}/transfer`, {
+    target_user_id: targetUserId,
+    group_id: groupId === null ? 0 : groupId,
+    name
+  })
+  return data
+}
+
 export const apiKeysAPI = {
-  updateApiKeyGroup
+  updateApiKeyGroup,
+  transferApiKey
 }
 
 export default apiKeysAPI

@@ -23,6 +23,9 @@ type userRepoStubForGroupUpdate struct {
 	addGroupCalled bool
 	addedUserID    int64
 	addedGroupID   int64
+	user           *User
+	getErr         error
+	gotGetByID     int64
 }
 
 func (s *userRepoStubForGroupUpdate) AddGroupToAllowedGroups(_ context.Context, userID int64, groupID int64) error {
@@ -33,7 +36,15 @@ func (s *userRepoStubForGroupUpdate) AddGroupToAllowedGroups(_ context.Context, 
 }
 
 func (s *userRepoStubForGroupUpdate) Create(context.Context, *User) error { panic("unexpected") }
-func (s *userRepoStubForGroupUpdate) GetByID(context.Context, int64) (*User, error) {
+func (s *userRepoStubForGroupUpdate) GetByID(_ context.Context, id int64) (*User, error) {
+	s.gotGetByID = id
+	if s.getErr != nil {
+		return nil, s.getErr
+	}
+	if s.user != nil {
+		clone := *s.user
+		return &clone, nil
+	}
 	panic("unexpected")
 }
 func (s *userRepoStubForGroupUpdate) GetByEmail(context.Context, string) (*User, error) {
@@ -532,4 +543,98 @@ func TestAdminService_AdminUpdateAPIKeyGroupID_Unbind_NoAllowedGroupUpdate(t *te
 	// 解绑时不修改 allowed_groups
 	require.False(t, userRepo.addGroupCalled)
 	require.False(t, got.AutoGrantedGroupAccess)
+}
+
+func TestAdminService_AdminTransferAPIKey_SuccessClearsGroupAndInvalidatesCache(t *testing.T) {
+	existing := &APIKey{
+		ID:      1,
+		UserID:  42,
+		Key:     "sk-test",
+		Name:    "old-key-name",
+		GroupID: int64Ptr(10),
+		Group:   &Group{ID: 10, Name: "Old"},
+	}
+	apiKeyRepo := &apiKeyRepoStubForGroupUpdate{key: existing}
+	userRepo := &userRepoStubForGroupUpdate{user: &User{ID: 99, Email: "target@example.com", Status: StatusActive}}
+	cache := &authCacheInvalidatorStub{}
+	svc := &adminServiceImpl{apiKeyRepo: apiKeyRepo, userRepo: userRepo, authCacheInvalidator: cache}
+
+	got, err := svc.AdminTransferAPIKey(context.Background(), 1, 99, nil, "source-user")
+	require.NoError(t, err)
+	require.Equal(t, int64(99), got.APIKey.UserID)
+	require.Equal(t, "source-user", got.APIKey.Name)
+	require.NotNil(t, got.APIKey.User)
+	require.Equal(t, int64(99), got.APIKey.User.ID)
+	require.Nil(t, got.APIKey.GroupID)
+	require.Nil(t, got.APIKey.Group)
+	require.NotNil(t, apiKeyRepo.updated)
+	require.Equal(t, int64(99), apiKeyRepo.updated.UserID)
+	require.Equal(t, "source-user", apiKeyRepo.updated.Name)
+	require.Nil(t, apiKeyRepo.updated.GroupID)
+	require.Equal(t, []string{"sk-test"}, cache.keys)
+	require.Equal(t, int64(99), userRepo.gotGetByID)
+}
+
+func TestAdminService_AdminTransferAPIKey_WithGroupBindsTargetGroup(t *testing.T) {
+	existing := &APIKey{
+		ID:      1,
+		UserID:  42,
+		Key:     "sk-test",
+		GroupID: int64Ptr(7),
+		Group:   &Group{ID: 7, Name: "Old"},
+	}
+	apiKeyRepo := &apiKeyRepoStubForGroupUpdate{key: existing}
+	userRepo := &userRepoStubForGroupUpdate{user: &User{ID: 99, Email: "target@example.com", Status: StatusActive}}
+	groupRepo := &groupRepoStubForGroupUpdate{group: &Group{ID: 10, Name: "Target", Status: StatusActive}}
+	cache := &authCacheInvalidatorStub{}
+	svc := &adminServiceImpl{apiKeyRepo: apiKeyRepo, userRepo: userRepo, groupRepo: groupRepo, authCacheInvalidator: cache}
+
+	got, err := svc.AdminTransferAPIKey(context.Background(), 1, 99, int64Ptr(10), "source-user")
+	require.NoError(t, err)
+	require.Equal(t, int64(99), got.APIKey.UserID)
+	require.NotNil(t, got.APIKey.GroupID)
+	require.Equal(t, int64(10), *got.APIKey.GroupID)
+	require.NotNil(t, got.APIKey.Group)
+	require.Equal(t, "Target", got.APIKey.Group.Name)
+	require.NotNil(t, apiKeyRepo.updated)
+	require.Equal(t, int64(99), apiKeyRepo.updated.UserID)
+	require.NotNil(t, apiKeyRepo.updated.GroupID)
+	require.Equal(t, int64(10), *apiKeyRepo.updated.GroupID)
+	require.Equal(t, []string{"sk-test"}, cache.keys)
+}
+
+func TestAdminService_AdminTransferAPIKey_InvalidTargetUserID(t *testing.T) {
+	svc := &adminServiceImpl{}
+
+	_, err := svc.AdminTransferAPIKey(context.Background(), 1, 0, nil, "")
+	require.Error(t, err)
+	require.Equal(t, "INVALID_TARGET_USER_ID", infraerrors.Reason(err))
+}
+
+func TestAdminService_AdminTransferAPIKey_KeyNotFound(t *testing.T) {
+	apiKeyRepo := &apiKeyRepoStubForGroupUpdate{getErr: ErrAPIKeyNotFound}
+	svc := &adminServiceImpl{apiKeyRepo: apiKeyRepo}
+
+	_, err := svc.AdminTransferAPIKey(context.Background(), 404, 99, nil, "")
+	require.ErrorIs(t, err, ErrAPIKeyNotFound)
+}
+
+func TestAdminService_AdminTransferAPIKey_TargetUserNotFound(t *testing.T) {
+	apiKeyRepo := &apiKeyRepoStubForGroupUpdate{key: &APIKey{ID: 1, UserID: 42, Key: "sk-test"}}
+	userRepo := &userRepoStubForGroupUpdate{getErr: ErrUserNotFound}
+	svc := &adminServiceImpl{apiKeyRepo: apiKeyRepo, userRepo: userRepo}
+
+	_, err := svc.AdminTransferAPIKey(context.Background(), 1, 99, nil, "")
+	require.ErrorIs(t, err, ErrUserNotFound)
+	require.Nil(t, apiKeyRepo.updated)
+}
+
+func TestAdminService_AdminTransferAPIKey_TargetUserNotActive(t *testing.T) {
+	apiKeyRepo := &apiKeyRepoStubForGroupUpdate{key: &APIKey{ID: 1, UserID: 42, Key: "sk-test"}}
+	userRepo := &userRepoStubForGroupUpdate{user: &User{ID: 99, Status: StatusDisabled}}
+	svc := &adminServiceImpl{apiKeyRepo: apiKeyRepo, userRepo: userRepo}
+
+	_, err := svc.AdminTransferAPIKey(context.Background(), 1, 99, nil, "")
+	require.ErrorIs(t, err, ErrUserNotActive)
+	require.Nil(t, apiKeyRepo.updated)
 }

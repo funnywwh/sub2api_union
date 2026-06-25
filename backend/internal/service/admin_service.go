@@ -59,6 +59,7 @@ type AdminService interface {
 
 	// API Key management (admin)
 	AdminUpdateAPIKeyGroupID(ctx context.Context, keyID int64, groupID *int64) (*AdminUpdateAPIKeyGroupIDResult, error)
+	AdminTransferAPIKey(ctx context.Context, keyID int64, targetUserID int64, groupID *int64, name string) (*AdminUpdateAPIKeyGroupIDResult, error)
 
 	// ReplaceUserGroup 替换用户的专属分组：授予新分组权限、迁移 Key、移除旧分组权限
 	ReplaceUserGroup(ctx context.Context, userID, oldGroupID, newGroupID int64) (*ReplaceUserGroupResult, error)
@@ -1899,6 +1900,10 @@ func (s *adminServiceImpl) AdminUpdateAPIKeyGroupID(ctx context.Context, keyID i
 		return nil, err
 	}
 
+	return s.adminApplyAPIKeyGroupID(ctx, apiKey, groupID)
+}
+
+func (s *adminServiceImpl) adminApplyAPIKeyGroupID(ctx context.Context, apiKey *APIKey, groupID *int64) (*AdminUpdateAPIKeyGroupIDResult, error) {
 	if groupID == nil {
 		// nil 表示不修改，直接返回
 		return &AdminUpdateAPIKeyGroupIDResult{APIKey: apiKey}, nil
@@ -1994,6 +1999,46 @@ func (s *adminServiceImpl) AdminUpdateAPIKeyGroupID(ctx context.Context, keyID i
 
 	result.APIKey = apiKey
 	return result, nil
+}
+
+// AdminTransferAPIKey 管理员将 API Key 转移到另一个用户。
+// groupID 为 nil 或 0 时清空分组，避免目标用户继承源用户的专属/订阅分组绑定。
+func (s *adminServiceImpl) AdminTransferAPIKey(ctx context.Context, keyID int64, targetUserID int64, groupID *int64, name string) (*AdminUpdateAPIKeyGroupIDResult, error) {
+	if targetUserID <= 0 {
+		return nil, infraerrors.BadRequest("INVALID_TARGET_USER_ID", "target_user_id must be positive")
+	}
+
+	apiKey, err := s.apiKeyRepo.GetByID(ctx, keyID)
+	if err != nil {
+		return nil, err
+	}
+
+	targetUser, err := s.userRepo.GetByID(ctx, targetUserID)
+	if err != nil {
+		return nil, err
+	}
+	if targetUser.Status != StatusActive {
+		return nil, ErrUserNotActive
+	}
+
+	apiKey.UserID = targetUserID
+	apiKey.User = targetUser
+	if trimmedName := strings.TrimSpace(name); trimmedName != "" {
+		if len([]rune(trimmedName)) > 100 {
+			return nil, infraerrors.BadRequest("INVALID_KEY_NAME", "name must be at most 100 characters")
+		}
+		apiKey.Name = trimmedName
+	}
+	apiKey.GroupID = nil
+	apiKey.Group = nil
+
+	targetGroupID := groupID
+	if targetGroupID == nil {
+		zero := int64(0)
+		targetGroupID = &zero
+	}
+
+	return s.adminApplyAPIKeyGroupID(ctx, apiKey, targetGroupID)
 }
 
 // ReplaceUserGroup 替换用户的专属分组
