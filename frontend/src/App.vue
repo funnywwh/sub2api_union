@@ -1,12 +1,16 @@
 <script setup lang="ts">
 import { RouterView, useRouter, useRoute } from 'vue-router'
-import { onMounted, onBeforeUnmount, watch } from 'vue'
-import Toast from '@/components/common/Toast.vue'
+import { computed, defineAsyncComponent, onMounted, onBeforeUnmount, watch } from 'vue'
 import NavigationProgress from '@/components/common/NavigationProgress.vue'
 import { resolveDocumentTitle } from '@/router/title'
-import AnnouncementPopup from '@/components/common/AnnouncementPopup.vue'
-import { useAppStore, useAuthStore, useSubscriptionStore, useAnnouncementStore } from '@/stores'
+import { useAppStore } from '@/stores/app'
+import { useAuthStore } from '@/stores/auth'
+import { useSubscriptionStore } from '@/stores/subscriptions'
+import { useAnnouncementStore } from '@/stores/announcements'
 import { getSetupStatus } from '@/api/setup'
+
+const Toast = defineAsyncComponent(() => import('@/components/common/Toast.vue'))
+const AnnouncementPopup = defineAsyncComponent(() => import('@/components/common/AnnouncementPopup.vue'))
 
 const router = useRouter()
 const route = useRoute()
@@ -14,6 +18,8 @@ const appStore = useAppStore()
 const authStore = useAuthStore()
 const subscriptionStore = useSubscriptionStore()
 const announcementStore = useAnnouncementStore()
+const hasToasts = computed(() => appStore.hasActiveToasts)
+const hasAnnouncementPopup = computed(() => Boolean(announcementStore.currentPopup))
 
 /**
  * Update favicon dynamically
@@ -114,6 +120,6 @@ onMounted(async () => {
 <template>
   <NavigationProgress />
   <RouterView />
-  <Toast />
-  <AnnouncementPopup />
+  <Toast v-if="hasToasts" />
+  <AnnouncementPopup v-if="hasAnnouncementPopup" />
 </template>

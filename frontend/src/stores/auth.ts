@@ -5,7 +5,7 @@
 
 import { defineStore } from 'pinia'
 import { ref, computed, readonly } from 'vue'
-import { authAPI, isTotp2FARequired, type LoginResponse } from '@/api'
+import { authAPI, isTotp2FARequired, type LoginResponse } from '@/api/auth'
 import type { User, LoginRequest, RegisterRequest, AuthResponse } from '@/types'
 import { clearAllStoredChatData } from '@/utils/chatStorage'
 

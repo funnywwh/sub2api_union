@@ -82,9 +82,40 @@ export default defineConfig(({ mode }) => {
               return 'vendor-vue'
             }
 
-            // UI 工具库（较大，单独分离）
-            if (id.includes('/@vueuse/') || id.includes('/xlsx/')) {
-              return 'vendor-ui'
+            // 首页会用到 HTTP 客户端，单独拆出，避免拖入其他杂项依赖
+            if (id.includes('/axios/')) {
+              return 'vendor-http'
+            }
+
+            // 只在聊天/公告中使用的 Markdown 与净化库
+            if (id.includes('/marked/') || id.includes('/dompurify/')) {
+              return 'vendor-markdown'
+            }
+
+            // 支付和导出相关重依赖按功能拆分，避免污染首屏
+            if (id.includes('/@stripe/stripe-js/')) {
+              return 'vendor-stripe'
+            }
+
+            if (id.includes('/qrcode/')) {
+              return 'vendor-qrcode'
+            }
+
+            if (id.includes('/xlsx/')) {
+              return 'vendor-xlsx'
+            }
+
+            if (id.includes('/file-saver/')) {
+              return 'vendor-export'
+            }
+
+            // 后台/引导交互库延后到对应页面
+            if (id.includes('/@vueuse/')) {
+              return 'vendor-vueuse'
+            }
+
+            if (id.includes('/driver.js/') || id.includes('/vue-draggable-plus/')) {
+              return 'vendor-interactions'
             }
 
             // 图表库
@@ -97,8 +128,8 @@ export default defineConfig(({ mode }) => {
               return 'vendor-i18n'
             }
 
-            // 其他小型第三方库合并
-            return 'vendor-misc'
+            // 其他第三方依赖交给 Rollup 跟随使用它们的路由/组件拆分
+            return undefined
           }
 
           // 应用代码：按入口点自动分包，不手动干预
