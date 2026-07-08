@@ -479,6 +479,48 @@ func TestOpenAIResponses_SetsClientTransportHTTP(t *testing.T) {
 	require.Equal(t, service.OpenAIClientTransportHTTP, service.GetOpenAIClientTransport(c))
 }
 
+func TestShouldUseOpenAIResponsesCompatPassthrough(t *testing.T) {
+	tests := []struct {
+		name    string
+		account *service.Account
+		want    bool
+	}{
+		{
+			name: "custom api key without passthrough uses compat conversion",
+			account: &service.Account{
+				Platform:    service.PlatformOpenAI,
+				Type:        service.AccountTypeAPIKey,
+				Credentials: map[string]any{"base_url": "https://compatible.example.com"},
+			},
+			want: true,
+		},
+		{
+			name: "custom api key with openai passthrough uses raw OpenAI forward",
+			account: &service.Account{
+				Platform:    service.PlatformOpenAI,
+				Type:        service.AccountTypeAPIKey,
+				Credentials: map[string]any{"base_url": "https://compatible.example.com"},
+				Extra:       map[string]any{"openai_passthrough": true},
+			},
+			want: false,
+		},
+		{
+			name: "official api key uses raw OpenAI forward",
+			account: &service.Account{
+				Platform: service.PlatformOpenAI,
+				Type:     service.AccountTypeAPIKey,
+			},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, shouldUseOpenAIResponsesCompatPassthrough(tt.account))
+		})
+	}
+}
+
 func TestOpenAIResponses_RejectsMessageIDAsPreviousResponseID(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

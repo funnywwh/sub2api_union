@@ -3323,6 +3323,8 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	defer putSSEScannerBuf64K(scanBuf)
 
 	needModelReplace := strings.TrimSpace(originalModel) != "" && strings.TrimSpace(mappedModel) != "" && strings.TrimSpace(originalModel) != strings.TrimSpace(mappedModel)
+	shouldCorrectToolCalls := shouldCorrectOpenAIPassthroughToolCalls(account)
+	responseToolNamesByItemID := make(map[string]string)
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -3353,6 +3355,21 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 			}
 			if openAIStreamEventIsTerminal(trimmedData) {
 				sawTerminalEvent = true
+			}
+			if shouldCorrectToolCalls {
+				if correctedData, corrected := s.correctToolCallsInSSEPayload(dataBytes); corrected {
+					dataBytes = correctedData
+					trimmedData = strings.TrimSpace(string(correctedData))
+					line = "data: " + string(correctedData)
+					eventType = strings.TrimSpace(gjson.GetBytes(dataBytes, "type").String())
+				}
+				trackResponsesToolNameByItemID(dataBytes, responseToolNamesByItemID)
+				if correctedData, corrected := s.correctResponsesFunctionCallArgumentsDone(dataBytes, responseToolNamesByItemID); corrected {
+					dataBytes = correctedData
+					trimmedData = strings.TrimSpace(string(correctedData))
+					line = "data: " + string(correctedData)
+					eventType = strings.TrimSpace(gjson.GetBytes(dataBytes, "type").String())
+				}
 			}
 			lineStartsClientOutput = forceFlushFailedEvent || openAIStreamDataStartsClientOutput(trimmedData, eventType)
 			if firstTokenMs == nil && lineStartsClientOutput && trimmedData != "[DONE]" {
@@ -4156,7 +4173,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 			}
 
 			// Correct Codex tool calls if needed (apply_patch -> edit, etc.)
-			if correctedData, corrected := s.toolCorrector.CorrectToolCallsInSSEBytes(dataBytes); corrected {
+			if correctedData, corrected := s.correctToolCallsInSSEPayload(dataBytes); corrected {
 				dataBytes = correctedData
 				data = string(correctedData)
 				line = "data: " + data
@@ -4369,11 +4386,67 @@ func (s *OpenAIGatewayService) correctToolCallsInResponseBody(body []byte) []byt
 		return body
 	}
 
-	corrected, changed := s.toolCorrector.CorrectToolCallsInSSEBytes(body)
+	corrected, changed := s.correctToolCallsInSSEPayload(body)
 	if changed {
 		return corrected
 	}
 	return body
+}
+
+func (s *OpenAIGatewayService) correctToolCallsInSSEPayload(data []byte) ([]byte, bool) {
+	if s == nil || s.toolCorrector == nil {
+		return data, false
+	}
+	return s.toolCorrector.CorrectToolCallsInSSEBytes(data)
+}
+
+func trackResponsesToolNameByItemID(data []byte, namesByItemID map[string]string) {
+	if len(data) == 0 || namesByItemID == nil {
+		return
+	}
+	itemType := strings.TrimSpace(gjson.GetBytes(data, "item.type").String())
+	switch itemType {
+	case "function_call", "custom_tool_call", "mcp_tool_call":
+	default:
+		return
+	}
+	itemID := strings.TrimSpace(gjson.GetBytes(data, "item.id").String())
+	if itemID == "" {
+		return
+	}
+	name := strings.TrimSpace(gjson.GetBytes(data, "item.name").String())
+	if mapped, ok := codexToolNameMapping[name]; ok {
+		name = mapped
+	}
+	if name == "" {
+		return
+	}
+	namesByItemID[itemID] = name
+}
+
+func (s *OpenAIGatewayService) correctResponsesFunctionCallArgumentsDone(data []byte, namesByItemID map[string]string) ([]byte, bool) {
+	if s == nil || s.toolCorrector == nil || len(data) == 0 || len(namesByItemID) == 0 {
+		return data, false
+	}
+	if strings.TrimSpace(gjson.GetBytes(data, "type").String()) != "response.function_call_arguments.done" {
+		return data, false
+	}
+	itemID := strings.TrimSpace(gjson.GetBytes(data, "item_id").String())
+	if itemID == "" {
+		return data, false
+	}
+	toolName := strings.TrimSpace(namesByItemID[itemID])
+	if mapped, ok := codexToolNameMapping[toolName]; ok {
+		toolName = mapped
+	}
+	if toolName == "" {
+		return data, false
+	}
+	return s.toolCorrector.correctToolParametersAtPath(data, "arguments", toolName)
+}
+
+func shouldCorrectOpenAIPassthroughToolCalls(account *Account) bool {
+	return account != nil && account.IsOpenAIApiKey()
 }
 
 func (s *OpenAIGatewayService) parseSSEUsage(data string, usage *OpenAIUsage) {

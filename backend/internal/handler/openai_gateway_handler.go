@@ -344,7 +344,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		// Passthrough: for non-OpenAI upstreams, convert Responses → Chat Completions
 		var forwardResult *service.OpenAIForwardResult
 		var forwardErr error
-		if account.Type == service.AccountTypeAPIKey && !account.IsOpenAIOfficial() {
+		if shouldUseOpenAIResponsesCompatPassthrough(account) {
 			forwardResult, forwardErr = h.gatewayService.ForwardResponsesPassthrough(c.Request.Context(), c, account, forwardBody, "")
 		} else {
 			forwardResult, forwardErr = h.gatewayService.Forward(c.Request.Context(), c, account, forwardBody)
@@ -467,6 +467,13 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		)
 		return
 	}
+}
+
+func shouldUseOpenAIResponsesCompatPassthrough(account *service.Account) bool {
+	return account != nil &&
+		account.Type == service.AccountTypeAPIKey &&
+		!account.IsOpenAIOfficial() &&
+		!account.IsOpenAIPassthroughEnabled()
 }
 
 func isOpenAIRemoteCompactPath(c *gin.Context) bool {

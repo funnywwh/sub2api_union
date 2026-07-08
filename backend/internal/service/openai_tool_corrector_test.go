@@ -12,6 +12,9 @@ func TestMayContainToolCallPayload(t *testing.T) {
 	if !mayContainToolCallPayload([]byte(`{"tool_calls":[{"function":{"name":"apply_patch"}}]}`)) {
 		t.Fatalf("tool_calls event should trigger tool-call parsing")
 	}
+	if !mayContainToolCallPayload([]byte(`{"type":"response.output_item.added","item":{"type":"custom_tool_call","name":"apply_patch"}}`)) {
+		t.Fatalf("custom_tool_call event should trigger tool-call parsing")
+	}
 }
 
 func TestCorrectToolCallsInSSEData(t *testing.T) {
@@ -217,6 +220,64 @@ func TestCorrectToolCallsInSSEData(t *testing.T) {
 				}
 				if functionCall["name"] != "edit" {
 					t.Errorf("Expected tool name 'edit', got '%v'", functionCall["name"])
+				}
+			},
+		},
+		{
+			name:            "correct responses output item function call",
+			input:           `{"type":"response.output_item.added","item":{"type":"function_call","name":"apply_patch","arguments":"{\"file_path\":\"/tmp/a.txt\",\"old_string\":\"a\",\"new_string\":\"b\"}"}}`,
+			expectCorrected: true,
+			checkFunc: func(t *testing.T, result string) {
+				var payload map[string]any
+				if err := json.Unmarshal([]byte(result), &payload); err != nil {
+					t.Fatalf("Failed to parse result: %v", err)
+				}
+				item, ok := payload["item"].(map[string]any)
+				if !ok {
+					t.Fatal("Invalid item format")
+				}
+				if item["name"] != "edit" {
+					t.Errorf("Expected tool name 'edit', got '%v'", item["name"])
+				}
+				argsRaw, ok := item["arguments"].(string)
+				if !ok {
+					t.Fatal("arguments is not a string")
+				}
+				var args map[string]any
+				if err := json.Unmarshal([]byte(argsRaw), &args); err != nil {
+					t.Fatalf("Failed to parse arguments: %v", err)
+				}
+				if _, ok := args["filePath"]; !ok {
+					t.Fatal("Expected filePath argument")
+				}
+				if _, ok := args["file_path"]; ok {
+					t.Fatal("Did not expect file_path argument")
+				}
+			},
+		},
+		{
+			name:            "correct responses completed output function call",
+			input:           `{"type":"response.completed","response":{"output":[{"type":"function_call","name":"read_file","arguments":"{\"path\":\"README.md\"}"}]}}`,
+			expectCorrected: true,
+			checkFunc: func(t *testing.T, result string) {
+				var payload map[string]any
+				if err := json.Unmarshal([]byte(result), &payload); err != nil {
+					t.Fatalf("Failed to parse result: %v", err)
+				}
+				response, ok := payload["response"].(map[string]any)
+				if !ok {
+					t.Fatal("Invalid response format")
+				}
+				output, ok := response["output"].([]any)
+				if !ok || len(output) == 0 {
+					t.Fatal("No response output found")
+				}
+				item, ok := output[0].(map[string]any)
+				if !ok {
+					t.Fatal("Invalid output item format")
+				}
+				if item["name"] != "read" {
+					t.Errorf("Expected tool name 'read', got '%v'", item["name"])
 				}
 			},
 		},

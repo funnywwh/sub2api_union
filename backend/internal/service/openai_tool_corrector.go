@@ -108,6 +108,18 @@ func (c *CodexToolCorrector) CorrectToolCallsInSSEBytes(data []byte) ([]byte, bo
 	if next, changed := c.correctFunctionAtPath(updated, "delta.function_call"); changed {
 		collect(changed, next)
 	}
+	if next, changed := c.correctToolCallsArrayAtPath(updated, "response.tool_calls"); changed {
+		collect(changed, next)
+	}
+	if next, changed := c.correctResponsesToolPayloadAtPath(updated, "item"); changed {
+		collect(changed, next)
+	}
+	if next, changed := c.correctResponsesOutputArrayAtPath(updated, "output"); changed {
+		collect(changed, next)
+	}
+	if next, changed := c.correctResponsesOutputArrayAtPath(updated, "response.output"); changed {
+		collect(changed, next)
+	}
 
 	choicesCount := int(gjson.GetBytes(updated, "choices.#").Int())
 	for i := 0; i < choicesCount; i++ {
@@ -136,6 +148,8 @@ func mayContainToolCallPayload(data []byte) bool {
 	// 快速路径：多数 token / 文本事件不包含工具字段，避免进入 JSON 解析热路径。
 	return bytes.Contains(data, []byte(`"tool_calls"`)) ||
 		bytes.Contains(data, []byte(`"function_call"`)) ||
+		bytes.Contains(data, []byte(`"custom_tool_call"`)) ||
+		bytes.Contains(data, []byte(`"mcp_tool_call"`)) ||
 		bytes.Contains(data, []byte(`"function":{"name"`))
 }
 
@@ -150,6 +164,47 @@ func (c *CodexToolCorrector) correctToolCallsArrayAtPath(data []byte, toolCallsP
 	for i := 0; i < count; i++ {
 		functionPath := toolCallsPath + "." + strconv.Itoa(i) + ".function"
 		if next, changed := c.correctFunctionAtPath(updated, functionPath); changed {
+			updated = next
+			corrected = true
+		}
+	}
+	return updated, corrected
+}
+
+func (c *CodexToolCorrector) correctResponsesOutputArrayAtPath(data []byte, outputPath string) ([]byte, bool) {
+	count := int(gjson.GetBytes(data, outputPath+".#").Int())
+	if count <= 0 {
+		return data, false
+	}
+	updated := data
+	corrected := false
+	for i := 0; i < count; i++ {
+		itemPath := outputPath + "." + strconv.Itoa(i)
+		if next, changed := c.correctResponsesToolPayloadAtPath(updated, itemPath); changed {
+			updated = next
+			corrected = true
+		}
+	}
+	return updated, corrected
+}
+
+func (c *CodexToolCorrector) correctResponsesToolPayloadAtPath(data []byte, itemPath string) ([]byte, bool) {
+	item := gjson.GetBytes(data, itemPath)
+	if !item.Exists() || !item.IsObject() {
+		return data, false
+	}
+
+	updated := data
+	corrected := false
+	if next, changed := c.correctToolCallsArrayAtPath(updated, itemPath+".tool_calls"); changed {
+		updated = next
+		corrected = true
+	}
+
+	itemType := strings.TrimSpace(gjson.GetBytes(updated, itemPath+".type").String())
+	switch itemType {
+	case "function_call", "custom_tool_call", "mcp_tool_call":
+		if next, changed := c.correctFunctionAtPath(updated, itemPath); changed {
 			updated = next
 			corrected = true
 		}
