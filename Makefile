@@ -39,7 +39,7 @@ docker-export:
 	tmp_tgz="$$(mktemp .sub2api-image.XXXXXX.tgz)" && \
 	trap 'rm -rf "$$tmp_dir" "$$tmp_tgz"' EXIT && \
 	docker save -o "$$tmp_dir/sub2api.tar" $(DOCKER_IMAGE) && \
-	gzip -c "$$tmp_dir/sub2api.tar" > "$$tmp_tgz" && \
+	tar -C "$$tmp_dir" -zcvf "$$tmp_tgz" sub2api.tar && \
 	mv "$$tmp_tgz" $(DOCKER_ARCHIVE)
 	@echo "完成: $(DOCKER_ARCHIVE)"
 
