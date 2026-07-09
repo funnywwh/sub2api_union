@@ -1,7 +1,8 @@
 .PHONY: build build-backend build-frontend build-datamanagementd docker-export test test-backend test-frontend test-frontend-critical test-datamanagementd secret-scan
 
 DOCKER_IMAGE ?= weishaw/sub2api:latest
-DOCKER_ARCHIVE ?= sub2api.tgz
+GIT_SHORT_HASH ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+DOCKER_ARCHIVE ?= sub2api-$(GIT_SHORT_HASH).tgz
 GOPROXY ?= https://goproxy.cn,direct
 GOSUMDB ?= sum.golang.org
 NO_CACHE ?= 0
