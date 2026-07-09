@@ -12,6 +12,7 @@ ARG ALPINE_IMAGE=alpine:3.20
 ARG GOPROXY=https://goproxy.cn,direct
 ARG GOSUMDB=sum.golang.org
 ARG NODE_OPTIONS=--max-old-space-size=4096
+ARG COMMIT=docker
 
 # -----------------------------------------------------------------------------
 # Stage 1: Frontend Builder
@@ -19,6 +20,7 @@ ARG NODE_OPTIONS=--max-old-space-size=4096
 FROM ${NODE_IMAGE} AS frontend-builder
 
 ARG NODE_OPTIONS
+ARG COMMIT
 
 WORKDIR /app/frontend
 ENV NODE_OPTIONS=${NODE_OPTIONS}
@@ -35,7 +37,7 @@ RUN pnpm install --frozen-lockfile
 # Skip `vue-tsc -b` inside image builds to keep memory usage predictable in
 # constrained environments. Type checking should still run in CI/local dev.
 COPY frontend/ ./
-RUN pnpm exec vite build
+RUN SUB2API_BUILD_HASH="${COMMIT}" node replace-build-hash.mjs && pnpm exec vite build
 
 # -----------------------------------------------------------------------------
 # Stage 2: Backend Builder
@@ -44,7 +46,7 @@ FROM ${GOLANG_IMAGE} AS backend-builder
 
 # Build arguments for version info (set by CI)
 ARG VERSION=docker
-ARG COMMIT=docker
+ARG COMMIT
 ARG DATE
 ARG GOPROXY
 ARG GOSUMDB

@@ -4,15 +4,15 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "vue-tsc -b && vite build",
+    "dev": "node replace-build-hash.mjs && vite",
+    "build": "node replace-build-hash.mjs && vue-tsc -b && vite build",
     "preview": "vite preview",
-    "lint": "eslint . --ext .vue,.js,.jsx,.cjs,.mjs,.ts,.tsx,.cts,.mts --fix",
-    "lint:check": "eslint . --ext .vue,.js,.jsx,.cjs,.mjs,.ts,.tsx,.cts,.mts",
-    "typecheck": "vue-tsc --noEmit",
-    "test": "vitest",
-    "test:run": "vitest run",
-    "test:coverage": "vitest run --coverage"
+    "lint": "node replace-build-hash.mjs && eslint . --ext .vue,.js,.jsx,.cjs,.mjs,.ts,.tsx,.cts,.mts --fix",
+    "lint:check": "node replace-build-hash.mjs && eslint . --ext .vue,.js,.jsx,.cjs,.mjs,.ts,.tsx,.cts,.mts",
+    "typecheck": "node replace-build-hash.mjs && vue-tsc --noEmit",
+    "test": "node replace-build-hash.mjs && vitest",
+    "test:run": "node replace-build-hash.mjs && vitest run",
+    "test:coverage": "node replace-build-hash.mjs && vitest run --coverage"
   },
   "dependencies": {
     "@lobehub/icons": "^4.0.2",

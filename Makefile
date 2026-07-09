@@ -39,6 +39,7 @@ build-datamanagementd:
 docker-export:
 	@echo "构建 Docker 镜像: $(DOCKER_IMAGE)"
 	@BUILDX_GIT_INFO=false docker build -t $(DOCKER_IMAGE) $(DOCKER_BUILD_FLAGS) \
+		--build-arg COMMIT=$(GIT_SHORT_HASH) \
 		--build-arg GOPROXY=$(GOPROXY) \
 		--build-arg GOSUMDB=$(GOSUMDB) \
 		.
@@ -67,6 +68,7 @@ test-frontend:
 	@$(MAKE) test-frontend-critical
 
 test-frontend-critical:
+	@pnpm --dir frontend exec node replace-build-hash.mjs
 	@pnpm --dir frontend exec vitest run $(FRONTEND_CRITICAL_VITEST)
 
 test-datamanagementd:
