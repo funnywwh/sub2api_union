@@ -143,6 +143,60 @@ func cacheChatResponseReasoning(respBody []byte) {
 	}
 }
 
+func extractOpenAIUsageFromChatCompletionJSONBytes(data []byte) (OpenAIUsage, bool) {
+	if len(data) == 0 || !gjson.ValidBytes(data) {
+		return OpenAIUsage{}, false
+	}
+	if !gjson.GetBytes(data, "usage").Exists() {
+		return OpenAIUsage{}, false
+	}
+	cachedTokens := gjson.GetBytes(data, "usage.prompt_tokens_details.cached_tokens").Int()
+	if cachedTokens == 0 {
+		cachedTokens = gjson.GetBytes(data, "usage.cached_tokens").Int()
+	}
+	return OpenAIUsage{
+		InputTokens:          int(gjson.GetBytes(data, "usage.prompt_tokens").Int()),
+		OutputTokens:         int(gjson.GetBytes(data, "usage.completion_tokens").Int()),
+		CacheReadInputTokens: int(cachedTokens),
+	}, true
+}
+
+func openAIUsageFromChatUsage(usage *apicompat.ChatUsage) OpenAIUsage {
+	if usage == nil {
+		return OpenAIUsage{}
+	}
+	cachedTokens := 0
+	if usage.PromptTokensDetails != nil {
+		cachedTokens = usage.PromptTokensDetails.CachedTokens
+	}
+	return OpenAIUsage{
+		InputTokens:          usage.PromptTokens,
+		OutputTokens:         usage.CompletionTokens,
+		CacheReadInputTokens: cachedTokens,
+	}
+}
+
+func responsesUsageFromChatUsage(usage *apicompat.ChatUsage) *apicompat.ResponsesUsage {
+	if usage == nil {
+		return nil
+	}
+	totalTokens := usage.TotalTokens
+	if totalTokens == 0 {
+		totalTokens = usage.PromptTokens + usage.CompletionTokens
+	}
+	out := &apicompat.ResponsesUsage{
+		InputTokens:  usage.PromptTokens,
+		OutputTokens: usage.CompletionTokens,
+		TotalTokens:  totalTokens,
+	}
+	if usage.PromptTokensDetails != nil && usage.PromptTokensDetails.CachedTokens > 0 {
+		out.InputTokensDetails = &apicompat.ResponsesInputTokensDetails{
+			CachedTokens: usage.PromptTokensDetails.CachedTokens,
+		}
+	}
+	return out
+}
+
 // ForwardAsChatCompletions accepts a Chat Completions request body, converts it
 // to OpenAI Responses API format, forwards to the OpenAI upstream, and converts
 // the response back to Chat Completions format.
@@ -905,16 +959,8 @@ func (s *OpenAIGatewayService) forwardChatCompletionsPassthrough(
 
 	// Extract usage from response for billing
 	var usage OpenAIUsage
-	var chatResp map[string]any
-	if err := json.Unmarshal(respBody, &chatResp); err == nil {
-		if u, ok := chatResp["usage"].(map[string]any); ok {
-			if v, ok := u["prompt_tokens"].(float64); ok {
-				usage.InputTokens = int(v)
-			}
-			if v, ok := u["completion_tokens"].(float64); ok {
-				usage.OutputTokens = int(v)
-			}
-		}
+	if parsedUsage, ok := extractOpenAIUsageFromChatCompletionJSONBytes(respBody); ok {
+		usage = parsedUsage
 	}
 
 	if s.responseHeaderFilter != nil {
@@ -1001,16 +1047,8 @@ func (s *OpenAIGatewayService) handlePassthroughStreamingResponse(
 		// Extract usage from the final chunk
 		if strings.HasPrefix(line, "data: ") && line != "data: [DONE]" {
 			payload := line[6:]
-			var chunk map[string]any
-			if err := json.Unmarshal([]byte(payload), &chunk); err == nil {
-				if u, ok := chunk["usage"].(map[string]any); ok {
-					if v, ok := u["prompt_tokens"].(float64); ok {
-						usage.InputTokens = int(v)
-					}
-					if v, ok := u["completion_tokens"].(float64); ok {
-						usage.OutputTokens = int(v)
-					}
-				}
+			if parsedUsage, ok := extractOpenAIUsageFromChatCompletionJSONBytes([]byte(payload)); ok {
+				usage = parsedUsage
 			}
 			// Accumulate reasoning/content deltas for caching.
 			var deltaChunk apicompat.ChatCompletionsChunk
@@ -1751,11 +1789,7 @@ func (s *OpenAIGatewayService) handleResponsesPassthroughNonStream(
 			} `json:"message"`
 			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
-		Usage struct {
-			PromptTokens     int `json:"prompt_tokens"`
-			CompletionTokens int `json:"completion_tokens"`
-			TotalTokens      int `json:"total_tokens"`
-		} `json:"usage"`
+		Usage apicompat.ChatUsage `json:"usage"`
 	}
 	if err := json.Unmarshal(respBody, &chatResp); err != nil {
 		// If we can't parse, pass through as-is
@@ -1805,11 +1839,7 @@ func (s *OpenAIGatewayService) handleResponsesPassthroughNonStream(
 		Model:  originalModel,
 		Status: status,
 		Output: outputs,
-		Usage: &apicompat.ResponsesUsage{
-			InputTokens:  chatResp.Usage.PromptTokens,
-			OutputTokens: chatResp.Usage.CompletionTokens,
-			TotalTokens:  chatResp.Usage.TotalTokens,
-		},
+		Usage:  responsesUsageFromChatUsage(&chatResp.Usage),
 	}
 	storeOpenAIResponsesPassthroughToolContext(responsesResp.ID, outputs)
 
@@ -1822,10 +1852,7 @@ func (s *OpenAIGatewayService) handleResponsesPassthroughNonStream(
 	c.Data(http.StatusOK, "application/json", respJSON)
 
 	return &OpenAIForwardResult{
-		Usage: OpenAIUsage{
-			InputTokens:  chatResp.Usage.PromptTokens,
-			OutputTokens: chatResp.Usage.CompletionTokens,
-		},
+		Usage:         openAIUsageFromChatUsage(&chatResp.Usage),
 		Model:         originalModel,
 		BillingModel:  billingModel,
 		UpstreamModel: upstreamModel,
@@ -1937,13 +1964,8 @@ func (s *OpenAIGatewayService) handleResponsesPassthroughStream(
 		}
 
 		// Extract usage from the final chunk
-		if u, ok := chunk["usage"].(map[string]any); ok {
-			if v, ok := u["prompt_tokens"].(float64); ok {
-				usage.InputTokens = int(v)
-			}
-			if v, ok := u["completion_tokens"].(float64); ok {
-				usage.OutputTokens = int(v)
-			}
+		if parsedUsage, ok := extractOpenAIUsageFromChatCompletionJSONBytes([]byte(payload)); ok {
+			usage = parsedUsage
 		}
 
 		choices, _ := chunk["choices"].([]any)
@@ -2040,6 +2062,11 @@ func (s *OpenAIGatewayService) handleResponsesPassthroughStream(
 		InputTokens:  usage.InputTokens,
 		OutputTokens: usage.OutputTokens,
 		TotalTokens:  usage.InputTokens + usage.OutputTokens,
+	}
+	if usage.CacheReadInputTokens > 0 {
+		responsesUsage.InputTokensDetails = &apicompat.ResponsesInputTokensDetails{
+			CachedTokens: usage.CacheReadInputTokens,
+		}
 	}
 	includeMessage := finalText != "" || !toolCallState.hasToolCalls()
 	messageOutput := apicompat.ResponsesOutput{

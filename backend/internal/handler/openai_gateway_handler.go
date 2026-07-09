@@ -67,6 +67,18 @@ func resolveOpenAIResponsesRoutingModel(c *gin.Context, requestedModel string) s
 	return model
 }
 
+func shouldUseOpenAIResponsesChatCompletionsCompatibility(account *service.Account) bool {
+	return account != nil &&
+		account.IsOpenAI() &&
+		account.Type == service.AccountTypeAPIKey &&
+		!account.SupportsOpenAIResponsesAPI()
+}
+
+func shouldAllowOpenAIResponsesHTTPPreviousResponseIDCompatibility(account *service.Account, previousResponseIDKind string) bool {
+	return shouldUseOpenAIResponsesChatCompletionsCompatibility(account) &&
+		previousResponseIDKind == service.OpenAIPreviousResponseIDKindUnknown
+}
+
 // NewOpenAIGatewayHandler creates a new OpenAIGatewayHandler
 func NewOpenAIGatewayHandler(
 	gatewayService *service.OpenAIGatewayService,
@@ -190,8 +202,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		reqLog = reqLog.With(zap.String("routing_model", routingModel))
 	}
 	previousResponseID := strings.TrimSpace(gjson.GetBytes(body, "previous_response_id").String())
+	previousResponseIDKind := service.OpenAIPreviousResponseIDKindEmpty
 	if previousResponseID != "" {
-		previousResponseIDKind := service.ClassifyOpenAIPreviousResponseIDKind(previousResponseID)
+		previousResponseIDKind = service.ClassifyOpenAIPreviousResponseIDKind(previousResponseID)
 		reqLog = reqLog.With(
 			zap.Bool("has_previous_response_id", true),
 			zap.String("previous_response_id_kind", previousResponseIDKind),
@@ -202,6 +215,13 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				zap.String("reason", "previous_response_id_looks_like_message_id"),
 			)
 			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "previous_response_id must be a response.id (resp_*), not a message id")
+			return
+		}
+		if previousResponseIDKind == service.OpenAIPreviousResponseIDKindResponseID {
+			reqLog.Warn("openai.request_validation_failed",
+				zap.String("reason", "previous_response_id_requires_wsv2"),
+			)
+			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "previous_response_id is only supported on Responses WebSocket v2")
 			return
 		}
 		// Non-WS HTTP requests generally cannot use previous_response_id, but
@@ -316,7 +336,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			zap.Float64("load_skew", scheduleDecision.LoadSkew),
 		)
 		account := selection.Account
-		if previousResponseID != "" && !(account.Type == service.AccountTypeAPIKey && !account.IsOpenAIOfficial()) {
+		if previousResponseID != "" && !shouldAllowOpenAIResponsesHTTPPreviousResponseIDCompatibility(account, previousResponseIDKind) {
 			reqLog.Warn("openai.request_validation_failed",
 				zap.String("reason", "previous_response_id_requires_wsv2"),
 				zap.Int64("account_id", account.ID),
@@ -341,10 +361,11 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		if channelMapping.Mapped {
 			forwardBody = h.gatewayService.ReplaceModelInBody(body, channelMapping.MappedModel)
 		}
-		// Passthrough: for non-OpenAI upstreams, convert Responses → Chat Completions
+		// Compatibility mode: for OpenAI-compatible upstreams without native
+		// Responses support, convert Responses → Chat Completions.
 		var forwardResult *service.OpenAIForwardResult
 		var forwardErr error
-		if account.Type == service.AccountTypeAPIKey && !account.IsOpenAIOfficial() {
+		if shouldUseOpenAIResponsesChatCompletionsCompatibility(account) {
 			forwardResult, forwardErr = h.gatewayService.ForwardResponsesPassthrough(c.Request.Context(), c, account, forwardBody, "")
 		} else {
 			forwardResult, forwardErr = h.gatewayService.Forward(c.Request.Context(), c, account, forwardBody)
