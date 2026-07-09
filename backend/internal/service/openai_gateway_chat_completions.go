@@ -154,10 +154,14 @@ func extractOpenAIUsageFromChatCompletionJSONBytes(data []byte) (OpenAIUsage, bo
 	if cachedTokens == 0 {
 		cachedTokens = gjson.GetBytes(data, "usage.cached_tokens").Int()
 	}
+	if cachedTokens == 0 {
+		cachedTokens = gjson.GetBytes(data, "usage.cache_read_input_tokens").Int()
+	}
 	return OpenAIUsage{
-		InputTokens:          int(gjson.GetBytes(data, "usage.prompt_tokens").Int()),
-		OutputTokens:         int(gjson.GetBytes(data, "usage.completion_tokens").Int()),
-		CacheReadInputTokens: int(cachedTokens),
+		InputTokens:              int(gjson.GetBytes(data, "usage.prompt_tokens").Int()),
+		OutputTokens:             int(gjson.GetBytes(data, "usage.completion_tokens").Int()),
+		CacheCreationInputTokens: int(gjson.GetBytes(data, "usage.cache_creation_input_tokens").Int()),
+		CacheReadInputTokens:     int(cachedTokens),
 	}, true
 }
 
@@ -170,10 +174,26 @@ func openAIUsageFromChatUsage(usage *apicompat.ChatUsage) OpenAIUsage {
 		cachedTokens = usage.PromptTokensDetails.CachedTokens
 	}
 	return OpenAIUsage{
-		InputTokens:          usage.PromptTokens,
-		OutputTokens:         usage.CompletionTokens,
-		CacheReadInputTokens: cachedTokens,
+		InputTokens:              usage.PromptTokens,
+		OutputTokens:             usage.CompletionTokens,
+		CacheCreationInputTokens: usage.CacheCreationInputTokens,
+		CacheReadInputTokens:     cachedTokens,
 	}
+}
+
+func openAIUsageFromResponsesUsage(usage *apicompat.ResponsesUsage) OpenAIUsage {
+	if usage == nil {
+		return OpenAIUsage{}
+	}
+	result := OpenAIUsage{
+		InputTokens:              usage.InputTokens,
+		OutputTokens:             usage.OutputTokens,
+		CacheCreationInputTokens: usage.CacheCreationInputTokens,
+	}
+	if usage.InputTokensDetails != nil {
+		result.CacheReadInputTokens = usage.InputTokensDetails.CachedTokens
+	}
+	return result
 }
 
 func responsesUsageFromChatUsage(usage *apicompat.ChatUsage) *apicompat.ResponsesUsage {
@@ -185,9 +205,10 @@ func responsesUsageFromChatUsage(usage *apicompat.ChatUsage) *apicompat.Response
 		totalTokens = usage.PromptTokens + usage.CompletionTokens
 	}
 	out := &apicompat.ResponsesUsage{
-		InputTokens:  usage.PromptTokens,
-		OutputTokens: usage.CompletionTokens,
-		TotalTokens:  totalTokens,
+		InputTokens:              usage.PromptTokens,
+		OutputTokens:             usage.CompletionTokens,
+		TotalTokens:              totalTokens,
+		CacheCreationInputTokens: usage.CacheCreationInputTokens,
 	}
 	if usage.PromptTokensDetails != nil && usage.PromptTokensDetails.CachedTokens > 0 {
 		out.InputTokensDetails = &apicompat.ResponsesInputTokensDetails{
@@ -541,13 +562,7 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 			event.Response != nil {
 			finalResponse = event.Response
 			if event.Response.Usage != nil {
-				usage = OpenAIUsage{
-					InputTokens:  event.Response.Usage.InputTokens,
-					OutputTokens: event.Response.Usage.OutputTokens,
-				}
-				if event.Response.Usage.InputTokensDetails != nil {
-					usage.CacheReadInputTokens = event.Response.Usage.InputTokensDetails.CachedTokens
-				}
+				usage = openAIUsageFromResponsesUsage(event.Response.Usage)
 			}
 		}
 	}
@@ -657,13 +672,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 		// Extract usage from completion events
 		if (event.Type == "response.completed" || event.Type == "response.incomplete" || event.Type == "response.failed") &&
 			event.Response != nil && event.Response.Usage != nil {
-			usage = OpenAIUsage{
-				InputTokens:  event.Response.Usage.InputTokens,
-				OutputTokens: event.Response.Usage.OutputTokens,
-			}
-			if event.Response.Usage.InputTokensDetails != nil {
-				usage.CacheReadInputTokens = event.Response.Usage.InputTokensDetails.CachedTokens
-			}
+			usage = openAIUsageFromResponsesUsage(event.Response.Usage)
 		}
 
 		chunks := apicompat.ResponsesEventToChatChunks(&event, state)
@@ -2067,6 +2076,9 @@ func (s *OpenAIGatewayService) handleResponsesPassthroughStream(
 		responsesUsage.InputTokensDetails = &apicompat.ResponsesInputTokensDetails{
 			CachedTokens: usage.CacheReadInputTokens,
 		}
+	}
+	if usage.CacheCreationInputTokens > 0 {
+		responsesUsage.CacheCreationInputTokens = usage.CacheCreationInputTokens
 	}
 	includeMessage := finalText != "" || !toolCallState.hasToolCalls()
 	messageOutput := apicompat.ResponsesOutput{

@@ -671,12 +671,17 @@ func parseUsageAndAccumulate(
 
 	inputResult := gjson.GetBytes(message, "response.usage.input_tokens")
 	outputResult := gjson.GetBytes(message, "response.usage.output_tokens")
+	cacheCreationResult := gjson.GetBytes(message, "response.usage.cache_creation_input_tokens")
 	cachedResult := gjson.GetBytes(message, "response.usage.input_tokens_details.cached_tokens")
+	if !cachedResult.Exists() {
+		cachedResult = gjson.GetBytes(message, "response.usage.cache_read_input_tokens")
+	}
 
 	inputTokens, inputOK := parseUsageIntField(inputResult, true)
 	outputTokens, outputOK := parseUsageIntField(outputResult, true)
+	cacheCreationTokens, cacheCreationOK := parseUsageIntField(cacheCreationResult, false)
 	cachedTokens, cachedOK := parseUsageIntField(cachedResult, false)
-	if !inputOK || !outputOK || !cachedOK {
+	if !inputOK || !outputOK || !cacheCreationOK || !cachedOK {
 		recordUsageParseFailure()
 		if onParseFailure != nil {
 			onParseFailure(eventType, usageRaw)
@@ -685,13 +690,15 @@ func parseUsageAndAccumulate(
 		return Usage{}
 	}
 	parsedUsage := Usage{
-		InputTokens:          inputTokens,
-		OutputTokens:         outputTokens,
-		CacheReadInputTokens: cachedTokens,
+		InputTokens:              inputTokens,
+		OutputTokens:             outputTokens,
+		CacheCreationInputTokens: cacheCreationTokens,
+		CacheReadInputTokens:     cachedTokens,
 	}
 
 	state.usage.InputTokens += parsedUsage.InputTokens
 	state.usage.OutputTokens += parsedUsage.OutputTokens
+	state.usage.CacheCreationInputTokens += parsedUsage.CacheCreationInputTokens
 	state.usage.CacheReadInputTokens += parsedUsage.CacheReadInputTokens
 	return parsedUsage
 }

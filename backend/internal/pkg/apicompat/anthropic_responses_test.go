@@ -150,6 +150,75 @@ func TestAnthropicToResponses_MaxTokensFloor(t *testing.T) {
 	assert.Equal(t, 128, *resp.MaxOutputTokens)
 }
 
+func TestAnthropicToResponsesResponse_CacheUsageUsesResponsesInputSemantics(t *testing.T) {
+	resp := &AnthropicResponse{
+		ID:         "msg_cached",
+		Type:       "message",
+		Role:       "assistant",
+		Model:      "claude-sonnet-4-5",
+		StopReason: "end_turn",
+		Content: []AnthropicContentBlock{
+			{Type: "text", Text: "cached"},
+		},
+		Usage: AnthropicUsage{
+			InputTokens:              12,
+			OutputTokens:             7,
+			CacheCreationInputTokens: 3,
+			CacheReadInputTokens:     9,
+		},
+	}
+
+	out := AnthropicToResponsesResponse(resp)
+	require.NotNil(t, out.Usage)
+	assert.Equal(t, 24, out.Usage.InputTokens)
+	assert.Equal(t, 7, out.Usage.OutputTokens)
+	assert.Equal(t, 31, out.Usage.TotalTokens)
+	assert.Equal(t, 3, out.Usage.CacheCreationInputTokens)
+	require.NotNil(t, out.Usage.InputTokensDetails)
+	assert.Equal(t, 9, out.Usage.InputTokensDetails.CachedTokens)
+}
+
+func TestAnthropicStreamToResponses_CacheUsageFromMessageStart(t *testing.T) {
+	state := NewAnthropicEventToResponsesState()
+
+	events := AnthropicEventToResponsesEvents(&AnthropicStreamEvent{
+		Type: "message_start",
+		Message: &AnthropicResponse{
+			ID:    "msg_cached_stream",
+			Type:  "message",
+			Role:  "assistant",
+			Model: "claude-sonnet-4-5",
+			Usage: AnthropicUsage{
+				InputTokens:              12,
+				CacheCreationInputTokens: 3,
+				CacheReadInputTokens:     9,
+			},
+		},
+	}, state)
+	require.Len(t, events, 1)
+	assert.Equal(t, "response.created", events[0].Type)
+
+	events = AnthropicEventToResponsesEvents(&AnthropicStreamEvent{
+		Type: "message_delta",
+		Usage: &AnthropicUsage{
+			OutputTokens: 7,
+		},
+	}, state)
+	require.Empty(t, events)
+
+	events = AnthropicEventToResponsesEvents(&AnthropicStreamEvent{Type: "message_stop"}, state)
+	require.Len(t, events, 1)
+	assert.Equal(t, "response.completed", events[0].Type)
+	require.NotNil(t, events[0].Response)
+	require.NotNil(t, events[0].Response.Usage)
+	assert.Equal(t, 24, events[0].Response.Usage.InputTokens)
+	assert.Equal(t, 7, events[0].Response.Usage.OutputTokens)
+	assert.Equal(t, 31, events[0].Response.Usage.TotalTokens)
+	assert.Equal(t, 3, events[0].Response.Usage.CacheCreationInputTokens)
+	require.NotNil(t, events[0].Response.Usage.InputTokensDetails)
+	assert.Equal(t, 9, events[0].Response.Usage.InputTokensDetails.CachedTokens)
+}
+
 // ---------------------------------------------------------------------------
 // ResponsesToAnthropic (non-streaming) tests
 // ---------------------------------------------------------------------------
@@ -208,6 +277,37 @@ func TestResponsesToAnthropic_CachedTokensUseAnthropicInputSemantics(t *testing.
 	assert.Equal(t, 3318, anth.Usage.InputTokens)
 	assert.Equal(t, 50688, anth.Usage.CacheReadInputTokens)
 	assert.Equal(t, 123, anth.Usage.OutputTokens)
+}
+
+func TestResponsesToAnthropic_CacheCreationExtensionUseAnthropicInputSemantics(t *testing.T) {
+	resp := &ResponsesResponse{
+		ID:     "resp_cache_creation",
+		Model:  "gpt-5.2",
+		Status: "completed",
+		Output: []ResponsesOutput{
+			{
+				Type: "message",
+				Content: []ResponsesContentPart{
+					{Type: "output_text", Text: "Cached response"},
+				},
+			},
+		},
+		Usage: &ResponsesUsage{
+			InputTokens:              24,
+			OutputTokens:             7,
+			TotalTokens:              31,
+			CacheCreationInputTokens: 3,
+			InputTokensDetails: &ResponsesInputTokensDetails{
+				CachedTokens: 9,
+			},
+		},
+	}
+
+	anth := ResponsesToAnthropic(resp, "claude-sonnet-4-5")
+	assert.Equal(t, 12, anth.Usage.InputTokens)
+	assert.Equal(t, 3, anth.Usage.CacheCreationInputTokens)
+	assert.Equal(t, 9, anth.Usage.CacheReadInputTokens)
+	assert.Equal(t, 7, anth.Usage.OutputTokens)
 }
 
 func TestResponsesToAnthropic_CachedTokensClampInputTokens(t *testing.T) {

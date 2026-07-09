@@ -4545,7 +4545,11 @@ func (s *OpenAIGatewayService) parseSSEUsageBytes(data []byte, usage *OpenAIUsag
 
 	usage.InputTokens = int(gjson.GetBytes(data, "response.usage.input_tokens").Int())
 	usage.OutputTokens = int(gjson.GetBytes(data, "response.usage.output_tokens").Int())
+	usage.CacheCreationInputTokens = int(gjson.GetBytes(data, "response.usage.cache_creation_input_tokens").Int())
 	usage.CacheReadInputTokens = int(gjson.GetBytes(data, "response.usage.input_tokens_details.cached_tokens").Int())
+	if usage.CacheReadInputTokens == 0 {
+		usage.CacheReadInputTokens = int(gjson.GetBytes(data, "response.usage.cache_read_input_tokens").Int())
+	}
 	usage.ImageOutputTokens = int(gjson.GetBytes(data, "response.usage.output_tokens_details.image_tokens").Int())
 }
 
@@ -4557,14 +4561,21 @@ func extractOpenAIUsageFromJSONBytes(body []byte) (OpenAIUsage, bool) {
 		body,
 		"usage.input_tokens",
 		"usage.output_tokens",
+		"usage.cache_creation_input_tokens",
 		"usage.input_tokens_details.cached_tokens",
+		"usage.cache_read_input_tokens",
 		"usage.output_tokens_details.image_tokens",
 	)
+	cacheReadTokens := int(values[3].Int())
+	if cacheReadTokens == 0 {
+		cacheReadTokens = int(values[4].Int())
+	}
 	return OpenAIUsage{
-		InputTokens:          int(values[0].Int()),
-		OutputTokens:         int(values[1].Int()),
-		CacheReadInputTokens: int(values[2].Int()),
-		ImageOutputTokens:    int(values[3].Int()),
+		InputTokens:              int(values[0].Int()),
+		OutputTokens:             int(values[1].Int()),
+		CacheCreationInputTokens: int(values[2].Int()),
+		CacheReadInputTokens:     cacheReadTokens,
+		ImageOutputTokens:        int(values[5].Int()),
 	}, true
 }
 
@@ -5163,9 +5174,9 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	account := input.Account
 	subscription := input.Subscription
 
-	// 计算实际的新输入token（减去缓存读取的token）
-	// 因为 input_tokens 包含了 cache_read_tokens，而缓存读取的token不应按输入价格计费
-	actualInputTokens := result.Usage.InputTokens - result.Usage.CacheReadInputTokens
+	// 计算实际的新输入token（减去缓存读取和缓存创建的token）
+	// 因为 input_tokens 包含缓存token，缓存token应按各自的缓存价格计费
+	actualInputTokens := result.Usage.InputTokens - result.Usage.CacheReadInputTokens - result.Usage.CacheCreationInputTokens
 	if actualInputTokens < 0 {
 		actualInputTokens = 0
 	}

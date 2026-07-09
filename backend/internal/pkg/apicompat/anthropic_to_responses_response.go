@@ -95,16 +95,7 @@ func AnthropicToResponsesResponse(resp *AnthropicResponse) *ResponsesResponse {
 	}
 
 	// Usage
-	out.Usage = &ResponsesUsage{
-		InputTokens:  resp.Usage.InputTokens,
-		OutputTokens: resp.Usage.OutputTokens,
-		TotalTokens:  resp.Usage.InputTokens + resp.Usage.OutputTokens,
-	}
-	if resp.Usage.CacheReadInputTokens > 0 {
-		out.Usage.InputTokensDetails = &ResponsesInputTokensDetails{
-			CachedTokens: resp.Usage.CacheReadInputTokens,
-		}
-	}
+	out.Usage = responsesUsageFromAnthropicUsage(resp.Usage)
 
 	return out
 }
@@ -151,9 +142,10 @@ type AnthropicEventToResponsesState struct {
 	CurrentName   string
 
 	// Usage from message_delta
-	InputTokens          int
-	OutputTokens         int
-	CacheReadInputTokens int
+	InputTokens              int
+	OutputTokens             int
+	CacheCreationInputTokens int
+	CacheReadInputTokens     int
 }
 
 // NewAnthropicEventToResponsesState returns an initialised stream state.
@@ -224,6 +216,15 @@ func anthToResHandleMessageStart(evt *AnthropicStreamEvent, state *AnthropicEven
 		}
 		if evt.Message.Usage.InputTokens > 0 {
 			state.InputTokens = evt.Message.Usage.InputTokens
+		}
+		if evt.Message.Usage.OutputTokens > 0 {
+			state.OutputTokens = evt.Message.Usage.OutputTokens
+		}
+		if evt.Message.Usage.CacheCreationInputTokens > 0 {
+			state.CacheCreationInputTokens = evt.Message.Usage.CacheCreationInputTokens
+		}
+		if evt.Message.Usage.CacheReadInputTokens > 0 {
+			state.CacheReadInputTokens = evt.Message.Usage.CacheReadInputTokens
 		}
 	}
 
@@ -391,7 +392,15 @@ func anthToResHandleContentBlockStop(evt *AnthropicStreamEvent, state *Anthropic
 func anthToResHandleMessageDelta(evt *AnthropicStreamEvent, state *AnthropicEventToResponsesState) []ResponsesStreamEvent {
 	// Update usage
 	if evt.Usage != nil {
-		state.OutputTokens = evt.Usage.OutputTokens
+		if evt.Usage.InputTokens > 0 {
+			state.InputTokens = evt.Usage.InputTokens
+		}
+		if evt.Usage.OutputTokens > 0 {
+			state.OutputTokens = evt.Usage.OutputTokens
+		}
+		if evt.Usage.CacheCreationInputTokens > 0 {
+			state.CacheCreationInputTokens = evt.Usage.CacheCreationInputTokens
+		}
 		if evt.Usage.CacheReadInputTokens > 0 {
 			state.CacheReadInputTokens = evt.Usage.CacheReadInputTokens
 		}
@@ -472,16 +481,12 @@ func makeResponsesCompletedEvent(
 	seq := state.SequenceNumber
 	state.SequenceNumber++
 
-	usage := &ResponsesUsage{
-		InputTokens:  state.InputTokens,
-		OutputTokens: state.OutputTokens,
-		TotalTokens:  state.InputTokens + state.OutputTokens,
-	}
-	if state.CacheReadInputTokens > 0 {
-		usage.InputTokensDetails = &ResponsesInputTokensDetails{
-			CachedTokens: state.CacheReadInputTokens,
-		}
-	}
+	usage := responsesUsageFromAnthropicUsage(AnthropicUsage{
+		InputTokens:              state.InputTokens,
+		OutputTokens:             state.OutputTokens,
+		CacheCreationInputTokens: state.CacheCreationInputTokens,
+		CacheReadInputTokens:     state.CacheReadInputTokens,
+	})
 
 	return ResponsesStreamEvent{
 		Type:           "response.completed",
@@ -496,6 +501,22 @@ func makeResponsesCompletedEvent(
 			IncompleteDetails: incompleteDetails,
 		},
 	}
+}
+
+func responsesUsageFromAnthropicUsage(usage AnthropicUsage) *ResponsesUsage {
+	inputTokens := usage.InputTokens + usage.CacheCreationInputTokens + usage.CacheReadInputTokens
+	out := &ResponsesUsage{
+		InputTokens:              inputTokens,
+		OutputTokens:             usage.OutputTokens,
+		TotalTokens:              inputTokens + usage.OutputTokens,
+		CacheCreationInputTokens: usage.CacheCreationInputTokens,
+	}
+	if usage.CacheReadInputTokens > 0 {
+		out.InputTokensDetails = &ResponsesInputTokensDetails{
+			CachedTokens: usage.CacheReadInputTokens,
+		}
+	}
+	return out
 }
 
 func makeResponsesEvent(state *AnthropicEventToResponsesState, eventType string, template *ResponsesStreamEvent) ResponsesStreamEvent {

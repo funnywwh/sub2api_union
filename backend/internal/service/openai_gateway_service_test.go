@@ -2143,9 +2143,10 @@ func TestParseSSEUsage_SelectiveParsing(t *testing.T) {
 	require.Equal(t, 7, usage.CacheReadInputTokens)
 
 	// completed 事件，应提取 usage
-	svc.parseSSEUsage(`{"type":"response.completed","response":{"usage":{"input_tokens":3,"output_tokens":5,"input_tokens_details":{"cached_tokens":2}}}}`, usage)
-	require.Equal(t, 3, usage.InputTokens)
+	svc.parseSSEUsage(`{"type":"response.completed","response":{"usage":{"input_tokens":6,"output_tokens":5,"cache_creation_input_tokens":3,"input_tokens_details":{"cached_tokens":2}}}}`, usage)
+	require.Equal(t, 6, usage.InputTokens)
 	require.Equal(t, 5, usage.OutputTokens)
+	require.Equal(t, 3, usage.CacheCreationInputTokens)
 	require.Equal(t, 2, usage.CacheReadInputTokens)
 
 	// done 事件同样可能携带最终 usage
@@ -2153,6 +2154,17 @@ func TestParseSSEUsage_SelectiveParsing(t *testing.T) {
 	require.Equal(t, 13, usage.InputTokens)
 	require.Equal(t, 15, usage.OutputTokens)
 	require.Equal(t, 4, usage.CacheReadInputTokens)
+}
+
+func TestExtractOpenAIUsageFromJSONBytes_CacheCreationExtension(t *testing.T) {
+	body := []byte(`{"usage":{"input_tokens":24,"output_tokens":7,"cache_creation_input_tokens":3,"input_tokens_details":{"cached_tokens":9}}}`)
+
+	usage, ok := extractOpenAIUsageFromJSONBytes(body)
+	require.True(t, ok)
+	require.Equal(t, 24, usage.InputTokens)
+	require.Equal(t, 7, usage.OutputTokens)
+	require.Equal(t, 3, usage.CacheCreationInputTokens)
+	require.Equal(t, 9, usage.CacheReadInputTokens)
 }
 
 func TestExtractCodexFinalResponse_SampleReplay(t *testing.T) {

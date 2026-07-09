@@ -399,11 +399,17 @@ func parseOpenAIWSResponseUsageFromCompletedEvent(message []byte, usage *OpenAIU
 		message,
 		"response.usage.input_tokens",
 		"response.usage.output_tokens",
+		"response.usage.cache_creation_input_tokens",
 		"response.usage.input_tokens_details.cached_tokens",
+		"response.usage.cache_read_input_tokens",
 	)
 	usage.InputTokens = int(values[0].Int())
 	usage.OutputTokens = int(values[1].Int())
-	usage.CacheReadInputTokens = int(values[2].Int())
+	usage.CacheCreationInputTokens = int(values[2].Int())
+	usage.CacheReadInputTokens = int(values[3].Int())
+	if usage.CacheReadInputTokens == 0 {
+		usage.CacheReadInputTokens = int(values[4].Int())
+	}
 }
 
 func parseOpenAIWSErrorEventFields(message []byte) (code string, errType string, errMessage string) {
@@ -3770,11 +3776,17 @@ func populateOpenAIUsageFromResponseJSON(body []byte, usage *OpenAIUsage) {
 		body,
 		"usage.input_tokens",
 		"usage.output_tokens",
+		"usage.cache_creation_input_tokens",
 		"usage.input_tokens_details.cached_tokens",
+		"usage.cache_read_input_tokens",
 	)
 	usage.InputTokens = int(values[0].Int())
 	usage.OutputTokens = int(values[1].Int())
-	usage.CacheReadInputTokens = int(values[2].Int())
+	usage.CacheCreationInputTokens = int(values[2].Int())
+	usage.CacheReadInputTokens = int(values[3].Int())
+	if usage.CacheReadInputTokens == 0 {
+		usage.CacheReadInputTokens = int(values[4].Int())
+	}
 }
 
 func getOpenAIGroupIDFromContext(c *gin.Context) int64 {

@@ -294,6 +294,10 @@ type ResponsesUsage struct {
 	OutputTokens int `json:"output_tokens"`
 	TotalTokens  int `json:"total_tokens"`
 
+	// Sub2API extension: preserves Anthropic cache creation tokens across
+	// OpenAI-compatible hops. OpenAI clients should ignore unknown fields.
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
+
 	// Optional detailed breakdown
 	InputTokensDetails  *ResponsesInputTokensDetails  `json:"input_tokens_details,omitempty"`
 	OutputTokensDetails *ResponsesOutputTokensDetails `json:"output_tokens_details,omitempty"`
@@ -455,10 +459,11 @@ type ChatChoice struct {
 
 // ChatUsage holds token counts in Chat Completions format.
 type ChatUsage struct {
-	PromptTokens        int               `json:"prompt_tokens"`
-	CompletionTokens    int               `json:"completion_tokens"`
-	TotalTokens         int               `json:"total_tokens"`
-	PromptTokensDetails *ChatTokenDetails `json:"prompt_tokens_details,omitempty"`
+	PromptTokens             int               `json:"prompt_tokens"`
+	CompletionTokens         int               `json:"completion_tokens"`
+	TotalTokens              int               `json:"total_tokens"`
+	CacheCreationInputTokens int               `json:"cache_creation_input_tokens,omitempty"`
+	PromptTokensDetails      *ChatTokenDetails `json:"prompt_tokens_details,omitempty"`
 }
 
 // ChatTokenDetails provides a breakdown of token usage.
