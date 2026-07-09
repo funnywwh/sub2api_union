@@ -68,11 +68,11 @@ const chatReasoningCacheTTL = 30 * time.Minute
 // cacheKeyForChatMessage builds a stable key from content + tool_calls.
 func cacheKeyForChatMessage(msg apicompat.ChatMessage) string {
 	h := sha256.New()
-	h.Write(msg.Content)
+	_, _ = h.Write(msg.Content)
 	for _, tc := range msg.ToolCalls {
-		h.Write([]byte(tc.ID))
-		h.Write([]byte(tc.Function.Name))
-		h.Write([]byte(tc.Function.Arguments))
+		_, _ = h.Write([]byte(tc.ID))
+		_, _ = h.Write([]byte(tc.Function.Name))
+		_, _ = h.Write([]byte(tc.Function.Arguments))
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }
@@ -1054,10 +1054,10 @@ func (s *OpenAIGatewayService) handlePassthroughStreamingResponse(
 			var deltaChunk apicompat.ChatCompletionsChunk
 			if err := json.Unmarshal([]byte(payload), &deltaChunk); err == nil && len(deltaChunk.Choices) > 0 {
 				if deltaChunk.Choices[0].Delta.Content != nil {
-					streamContent.WriteString(*deltaChunk.Choices[0].Delta.Content)
+					_, _ = streamContent.WriteString(*deltaChunk.Choices[0].Delta.Content)
 				}
 				if deltaChunk.Choices[0].Delta.ReasoningContent != nil {
-					streamReasoning.WriteString(*deltaChunk.Choices[0].Delta.ReasoningContent)
+					_, _ = streamReasoning.WriteString(*deltaChunk.Choices[0].Delta.ReasoningContent)
 				}
 			}
 		}

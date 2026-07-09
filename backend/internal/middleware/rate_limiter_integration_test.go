@@ -5,6 +5,7 @@ package middleware
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -142,7 +143,12 @@ func dockerAvailable() bool {
 		if socket == "" {
 			continue
 		}
-		if _, err := os.Stat(socket); err == nil {
+		if _, err := os.Stat(socket); err != nil {
+			continue
+		}
+		conn, err := net.DialTimeout("unix", socket, 200*time.Millisecond)
+		if err == nil {
+			_ = conn.Close()
 			return true
 		}
 	}

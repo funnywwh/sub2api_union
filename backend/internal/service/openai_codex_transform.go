@@ -459,6 +459,9 @@ func normalizeCodexModel(model string) string {
 	if strings.Contains(normalized, "gpt-5.4-mini") || strings.Contains(normalized, "gpt 5.4 mini") || strings.Contains(compact, "gpt5.4mini") {
 		return "gpt-5.4-mini"
 	}
+	if strings.Contains(normalized, "gpt-5.4-nano") || strings.Contains(normalized, "gpt 5.4 nano") || strings.Contains(compact, "gpt5.4nano") {
+		return "gpt-5.4-nano"
+	}
 	if strings.Contains(normalized, "gpt-5.4") || strings.Contains(normalized, "gpt 5.4") || strings.Contains(compact, "gpt5.4") {
 		return "gpt-5.4"
 	}

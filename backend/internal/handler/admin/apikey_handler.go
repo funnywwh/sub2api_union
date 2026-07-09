@@ -29,7 +29,7 @@ type AdminUpdateAPIKeyGroupRequest struct {
 
 // AdminTransferAPIKeyRequest represents the request to transfer an API key.
 type AdminTransferAPIKeyRequest struct {
-	TargetUserID int64 `json:"target_user_id"`
+	TargetUserID int64  `json:"target_user_id"`
 	GroupID      *int64 `json:"group_id"` // nil/0=转让后无分组, >0=绑定到目标分组
 	Name         string `json:"name"`     // 转让后的 API Key 显示名称，空值保持原名称
 }
