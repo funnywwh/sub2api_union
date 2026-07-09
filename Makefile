@@ -4,6 +4,12 @@ DOCKER_IMAGE ?= weishaw/sub2api:latest
 DOCKER_ARCHIVE ?= sub2api.tgz
 GOPROXY ?= https://goproxy.cn,direct
 GOSUMDB ?= sum.golang.org
+NO_CACHE ?= 0
+DOCKER_BUILD_FLAGS ?=
+
+ifneq ($(filter 1 true yes,$(NO_CACHE)),)
+DOCKER_BUILD_FLAGS += --no-cache
+endif
 
 FRONTEND_CRITICAL_VITEST := \
 	src/views/auth/__tests__/LinuxDoCallbackView.spec.ts \
@@ -31,16 +37,21 @@ build-datamanagementd:
 # 构建并导出 Docker 镜像
 docker-export:
 	@echo "构建 Docker 镜像: $(DOCKER_IMAGE)"
-	@docker build . -t $(DOCKER_IMAGE) \
+	@BUILDX_GIT_INFO=false docker build -t $(DOCKER_IMAGE) $(DOCKER_BUILD_FLAGS) \
 		--build-arg GOPROXY=$(GOPROXY) \
-		--build-arg GOSUMDB=$(GOSUMDB)
+		--build-arg GOSUMDB=$(GOSUMDB) \
+		.
 	@echo "导出 Docker 镜像: $(DOCKER_ARCHIVE)"
 	@tmp_dir="$$(mktemp -d .sub2api-image.XXXXXX)" && \
 	tmp_tgz="$$(mktemp .sub2api-image.XXXXXX.tgz)" && \
 	trap 'rm -rf "$$tmp_dir" "$$tmp_tgz"' EXIT && \
 	docker save -o "$$tmp_dir/sub2api.tar" $(DOCKER_IMAGE) && \
 	tar -C "$$tmp_dir" -zcvf "$$tmp_tgz" sub2api.tar && \
-	mv "$$tmp_tgz" $(DOCKER_ARCHIVE)
+	chmod 0644 "$$tmp_tgz" && \
+	if [ -n "$${SUDO_UID:-}" ] && [ -n "$${SUDO_GID:-}" ]; then \
+		chown "$$SUDO_UID:$$SUDO_GID" "$$tmp_tgz"; \
+	fi && \
+	mv "$$tmp_tgz" "$(DOCKER_ARCHIVE)"
 	@echo "完成: $(DOCKER_ARCHIVE)"
 
 # 运行测试（后端 + 前端）

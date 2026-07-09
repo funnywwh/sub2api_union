@@ -3,63 +3,14 @@ exceptions:
   - package: xlsx
     advisory: "GHSA-4r6h-8v6p-xvw6"
     severity: high
-    reason: "Admin export only; switched to dynamic import to reduce exposure (CVE-2023-30533)"
-    mitigation: "Load only on export; restrict export permissions and data scope"
-    expires_on: "2026-07-06"
+    reason: "Admin export uses SheetJS only to generate spreadsheets; no untrusted workbook parsing path is exposed."
+    mitigation: "Keep xlsx behind lazy-loaded admin export flows; continue evaluating migration to a maintained writer-only export library."
+    expires_on: "2026-10-09"
     owner: "security@your-domain"
   - package: xlsx
     advisory: "GHSA-5pgg-2g8v-p4x9"
     severity: high
-    reason: "Admin export only; switched to dynamic import to reduce exposure (CVE-2024-22363)"
-    mitigation: "Load only on export; restrict export permissions and data scope"
-    expires_on: "2026-07-06"
-    owner: "security@your-domain"
-  - package: lodash
-    advisory: "GHSA-r5fr-rjxr-66jc"
-    severity: high
-    reason: "lodash _.template not used with untrusted input; only internal admin UI templates"
-    mitigation: "No user-controlled template strings; plan to migrate to lodash-es tree-shaken imports"
-    expires_on: "2026-07-02"
-    owner: "security@your-domain"
-  - package: lodash-es
-    advisory: "GHSA-r5fr-rjxr-66jc"
-    severity: high
-    reason: "lodash-es _.template not used with untrusted input; only internal admin UI templates"
-    mitigation: "No user-controlled template strings; plan to migrate to native JS alternatives"
-    expires_on: "2026-07-02"
-    owner: "security@your-domain"
-  - package: axios
-    advisory: "GHSA-3p68-rc4w-qgx5"
-    severity: critical
-    reason: "NO_PROXY bypass not exploitable; all API calls go to known endpoints via server-side proxy"
-    mitigation: "Proxy configuration not user-controlled; upgrade when axios releases fix"
-    expires_on: "2026-07-10"
-    owner: "security@your-domain"
-  - package: axios
-    advisory: "GHSA-pmwg-cvhr-8vh7"
-    severity: high
-    reason: "Frontend axios usage is browser-only and same-origin; Node NO_PROXY handling is not used"
-    mitigation: "Keep API calls on /api/v1 server proxy; upgrade axios to a fixed release when available in the lockfile registry"
-    expires_on: "2026-06-30"
-    owner: "security@your-domain"
-  - package: axios
-    advisory: "GHSA-q8qp-cvcw-x6jj"
-    severity: high
-    reason: "Frontend bundle does not use the Node HTTP adapter paths required for credential injection and SSRF gadgets"
-    mitigation: "Do not run frontend axios in Node server contexts; upgrade axios to >=1.15.2 when available"
-    expires_on: "2026-06-30"
-    owner: "security@your-domain"
-  - package: axios
-    advisory: "GHSA-pf86-5x62-jrwf"
-    severity: high
-    reason: "Axios is used for browser same-origin API calls with fixed base URL, limiting request hijack exposure"
-    mitigation: "Avoid merging untrusted config into axios requests; upgrade axios to a patched release when available"
-    expires_on: "2026-06-30"
-    owner: "security@your-domain"
-  - package: axios
-    advisory: "GHSA-6chq-wfr3-2hj9"
-    severity: high
-    reason: "Header injection gadget is documented in the Node HTTP adapter; frontend runs through the browser adapter"
-    mitigation: "Avoid Node-side axios use for frontend code; upgrade axios to >=1.15.1 when available"
-    expires_on: "2026-06-30"
+    reason: "Admin export uses SheetJS only to write spreadsheets; ReDoS parsing paths are not reachable from user-uploaded files."
+    mitigation: "Keep xlsx behind lazy-loaded admin export flows; continue evaluating migration to a maintained writer-only export library."
+    expires_on: "2026-10-09"
     owner: "security@your-domain"

@@ -27,7 +27,7 @@
         {
           "version": "0.18.5",
           "paths": [
-            ".>xlsx"
+            ". > xlsx@0.18.5"
           ]
         }
       ],
@@ -66,7 +66,7 @@
         {
           "version": "0.18.5",
           "paths": [
-            ".>xlsx"
+            ". > xlsx@0.18.5"
           ]
         }
       ],
@@ -110,9 +110,9 @@
       "high": 2,
       "critical": 0
     },
-    "dependencies": 639,
+    "dependencies": 662,
     "devDependencies": 0,
     "optionalDependencies": 0,
-    "totalDependencies": 639
+    "totalDependencies": 662
   }
 }

@@ -19,9 +19,9 @@
     "@stripe/stripe-js": "^9.0.1",
     "@tanstack/vue-virtual": "^3.13.23",
     "@vueuse/core": "^10.7.0",
-    "axios": "^1.15.0",
+    "axios": "^1.18.1",
     "chart.js": "^4.4.1",
-    "dompurify": "^3.3.1",
+    "dompurify": "^3.4.11",
     "driver.js": "^1.4.0",
     "file-saver": "^2.0.5",
     "marked": "^17.0.1",
@@ -35,7 +35,6 @@
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
-    "@types/dompurify": "^3.0.5",
     "@types/file-saver": "^2.0.7",
     "@types/mdx": "^2.0.13",
     "@types/node": "^20.10.5",
@@ -56,11 +55,5 @@
     "vite-plugin-checker": "^0.9.1",
     "vitest": "^2.1.9",
     "vue-tsc": "^2.2.0"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "esbuild",
-      "vue-demi"
-    ]
   }
 }
