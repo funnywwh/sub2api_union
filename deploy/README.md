@@ -16,6 +16,7 @@ This directory contains files for deploying Sub2API on Linux servers.
 | `docker-compose.yml` | Docker Compose configuration (named volumes) |
 | `docker-compose.local.yml` | Docker Compose configuration (local directories, easy migration) |
 | `docker-deploy.sh` | **One-click Docker deployment script (recommended)** |
+| `recreate.sh` | Apply a `make docker-export` image archive and recreate the Sub2API container |
 | `.env.example` | Docker environment variables template |
 | `DOCKER.md` | Docker Hub documentation |
 | `install.sh` | One-click binary installation script |
@@ -44,7 +45,7 @@ chmod +x docker-deploy.sh
 ```
 
 **What the script does:**
-- Downloads `docker-compose.local.yml` and `.env.example`
+- Downloads `docker-compose.local.yml` as `docker-compose.yml`, plus `.env.example` and `recreate.sh`
 - Automatically generates secure secrets (JWT_SECRET, TOTP_ENCRYPTION_KEY, POSTGRES_PASSWORD)
 - Creates `.env` file with generated secrets
 - Creates necessary data directories (data/, postgres_data/, redis_data/)
@@ -53,13 +54,13 @@ chmod +x docker-deploy.sh
 **After running the script:**
 ```bash
 # Start services
-docker compose -f docker-compose.local.yml up -d
+docker compose up -d
 
 # View logs
-docker compose -f docker-compose.local.yml logs -f sub2api
+docker compose logs -f sub2api
 
 # If admin password was auto-generated, find it in logs:
-docker compose -f docker-compose.local.yml logs sub2api | grep "admin password"
+docker compose logs sub2api | grep "admin password"
 
 # Access Web UI
 # http://localhost:8080
@@ -203,6 +204,30 @@ docker compose up -d
 
 # Remove all data (caution!)
 docker compose down -v
+```
+
+### Offline Image Update (`make docker-export`)
+
+Use this when the target server cannot pull from Docker Hub, or when you want to apply a locally built image package:
+
+```bash
+# On the build machine
+make docker-export
+
+# Copy the generated archive to the deployment directory on the server
+scp sub2api-<hash>.tgz user@server:/path/to/sub2api-deploy/
+
+# On the server
+cd /path/to/sub2api-deploy/
+./recreate.sh sub2api-<hash>.tgz
+```
+
+`recreate.sh` loads the image from the archive and runs `docker compose up -d --no-deps --force-recreate sub2api`, so PostgreSQL and Redis data containers are not recreated.
+
+If both `docker-compose.yml` and `docker-compose.local.yml` are present, or if your compose file is not `docker-compose.yml`, pass the compose file as the second argument:
+
+```bash
+./recreate.sh sub2api-<hash>.tgz docker-compose.local.yml
 ```
 
 ### Environment Variables

@@ -3,7 +3,7 @@
 # Sub2API Docker Deployment Preparation Script
 # =============================================================================
 # This script prepares deployment files for Sub2API:
-#   - Downloads docker-compose.local.yml and .env.example
+#   - Downloads docker-compose.local.yml, .env.example, and recreate.sh
 #   - Generates secure secrets (JWT_SECRET, TOTP_ENCRYPTION_KEY, POSTGRES_PASSWORD)
 #   - Creates necessary data directories
 #
@@ -50,6 +50,20 @@ command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
+download_file() {
+    local url="$1"
+    local dest="$2"
+
+    if command_exists curl; then
+        curl -fsSL "$url" -o "$dest"
+    elif command_exists wget; then
+        wget -q "$url" -O "$dest"
+    else
+        print_error "Neither curl nor wget is installed. Please install one of them."
+        exit 1
+    fi
+}
+
 # Main installation function
 main() {
     echo ""
@@ -77,24 +91,23 @@ main() {
 
     # Download docker-compose.local.yml and save as docker-compose.yml
     print_info "Downloading docker-compose.yml..."
-    if command_exists curl; then
-        curl -sSL "${GITHUB_RAW_URL}/docker-compose.local.yml" -o docker-compose.yml
-    elif command_exists wget; then
-        wget -q "${GITHUB_RAW_URL}/docker-compose.local.yml" -O docker-compose.yml
-    else
-        print_error "Neither curl nor wget is installed. Please install one of them."
-        exit 1
-    fi
+    download_file "${GITHUB_RAW_URL}/docker-compose.local.yml" docker-compose.yml
     print_success "Downloaded docker-compose.yml"
 
     # Download .env.example
     print_info "Downloading .env.example..."
-    if command_exists curl; then
-        curl -sSL "${GITHUB_RAW_URL}/.env.example" -o .env.example
-    else
-        wget -q "${GITHUB_RAW_URL}/.env.example" -O .env.example
-    fi
+    download_file "${GITHUB_RAW_URL}/.env.example" .env.example
     print_success "Downloaded .env.example"
+
+    # Download recreate.sh
+    print_info "Downloading recreate.sh..."
+    download_file "${GITHUB_RAW_URL}/recreate.sh" recreate.sh
+    if ! bash -n recreate.sh; then
+        print_error "Downloaded recreate.sh is not a valid bash script."
+        exit 1
+    fi
+    chmod +x recreate.sh
+    print_success "Downloaded recreate.sh"
 
     # Generate .env file with auto-generated secrets
     print_info "Generating secure secrets..."
@@ -145,6 +158,7 @@ main() {
     echo ""
     echo "Directory structure:"
     echo "  docker-compose.yml        - Docker Compose configuration"
+    echo "  recreate.sh               - Apply docker-export image archives"
     echo "  .env                      - Environment variables (generated secrets)"
     echo "  .env.example              - Example template (for reference)"
     echo "  data/                     - Application data (will be created on first run)"
@@ -161,6 +175,12 @@ main() {
     echo ""
     echo "  4. Access Web UI:"
     echo "     http://localhost:8080"
+    echo ""
+    echo "Offline image update:"
+    echo "  1. Build image archive on the build machine:"
+    echo "     make docker-export"
+    echo "  2. Copy the generated sub2api-*.tgz here, then apply it:"
+    echo "     ./recreate.sh sub2api-*.tgz"
     echo ""
     print_info "If admin password is not set in .env, it will be auto-generated."
     print_info "Check logs for the generated admin password on first startup."
