@@ -13,6 +13,7 @@ ARG POSTGRES_IMAGE=postgres:18-alpine
 ARG GOPROXY=https://goproxy.cn,direct
 ARG GOSUMDB=sum.golang.org
 ARG NODE_OPTIONS=--max-old-space-size=4096
+ARG PNPM_VERSION=9.15.9
 ARG COMMIT=docker
 
 # -----------------------------------------------------------------------------
@@ -21,6 +22,7 @@ ARG COMMIT=docker
 FROM ${NODE_IMAGE} AS frontend-builder
 
 ARG NODE_OPTIONS
+ARG PNPM_VERSION
 ARG COMMIT
 
 WORKDIR /app/frontend
@@ -28,7 +30,7 @@ ENV NODE_OPTIONS=${NODE_OPTIONS}
 ENV CI=1
 
 # Install pnpm
-RUN corepack enable && corepack prepare pnpm@latest --activate
+RUN corepack enable && corepack prepare "pnpm@${PNPM_VERSION}" --activate
 
 # Install dependencies first (better caching)
 COPY frontend/package.json frontend/pnpm-lock.yaml frontend/pnpm-workspace.yaml frontend/.npmrc ./
