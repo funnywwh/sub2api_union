@@ -1,7 +1,6 @@
 package service
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -890,6 +889,8 @@ func TestApplyCodexOAuthTransform_TrimmedModelWithoutPolicyRewrite(t *testing.T)
 }
 
 func TestApplyCodexOAuthTransform_CodexCLI_PreservesExistingInstructions(t *testing.T) {
+	// Codex CLI 场景：已有 instructions 时不修改
+
 	reqBody := map[string]any{
 		"model":        "gpt-5.1",
 		"instructions": "existing instructions",
@@ -899,24 +900,9 @@ func TestApplyCodexOAuthTransform_CodexCLI_PreservesExistingInstructions(t *test
 
 	instructions, ok := reqBody["instructions"].(string)
 	require.True(t, ok)
-	require.Contains(t, instructions, "existing instructions")
-	require.Contains(t, instructions, codexToolWhitespaceMarker)
-	require.Contains(t, instructions, "preserve every space in command strings exactly")
+	require.Equal(t, "existing instructions", instructions)
+	// Modified 仍可能为 true（因为其他字段被修改），但 instructions 应保持不变
 	_ = result
-}
-
-func TestApplyCodexOAuthTransform_CodexCLI_AppendsToolWhitespaceInstructionsOnce(t *testing.T) {
-	reqBody := map[string]any{
-		"model":        "gpt-5.1",
-		"instructions": "existing instructions",
-	}
-
-	applyCodexOAuthTransform(reqBody, true, false)
-	applyCodexOAuthTransform(reqBody, true, false)
-
-	instructions, ok := reqBody["instructions"].(string)
-	require.True(t, ok)
-	require.Equal(t, 1, strings.Count(instructions, codexToolWhitespaceMarker))
 }
 
 func TestApplyCodexOAuthTransform_CodexCLI_SuppliesDefaultWhenEmpty(t *testing.T) {

@@ -32,8 +32,6 @@ var codexToolNameMapping = map[string]string{
 	"executeBash":  "bash",
 	"exec_bash":    "bash",
 	"execBash":     "bash",
-	"exec_command": "bash",
-	"execCommand":  "bash",
 
 	// Some clients output generic fetch names.
 	"fetch":     "webfetch",
@@ -308,11 +306,6 @@ func (c *CodexToolCorrector) correctToolArgumentsJSON(argsJSON, toolName string)
 	// 根据工具名称应用特定的参数修正规则
 	switch toolName {
 	case "bash":
-		if next, changed := correctBashCommandParameters(updated); changed {
-			updated = next
-			corrected = true
-		}
-
 		// OpenCode bash 支持 workdir；有些来源会输出 work_dir。
 		if !gjson.Get(updated, "workdir").Exists() {
 			if next, changed := moveJSONField(updated, "work_dir", "workdir"); changed {
@@ -363,25 +356,6 @@ func (c *CodexToolCorrector) correctToolArgumentsJSON(argsJSON, toolName string)
 			corrected = true
 			logger.LegacyPrintf("service.openai_tool_corrector", "[CodexToolCorrector] Renamed 'replace_all' to 'replaceAll' in edit tool")
 		}
-	}
-	return updated, corrected
-}
-
-func correctBashCommandParameters(input string) (string, bool) {
-	updated := input
-	corrected := false
-
-	commandPath := "command"
-	if !gjson.Get(updated, commandPath).Exists() {
-		if next, changed := moveJSONField(updated, "cmd", commandPath); changed {
-			updated = next
-			corrected = true
-			logger.LegacyPrintf("service.openai_tool_corrector", "[CodexToolCorrector] Renamed 'cmd' to 'command' in bash tool")
-		}
-	} else if next, changed := deleteJSONField(updated, "cmd"); changed {
-		updated = next
-		corrected = true
-		logger.LegacyPrintf("service.openai_tool_corrector", "[CodexToolCorrector] Removed duplicate 'cmd' parameter from bash tool")
 	}
 	return updated, corrected
 }

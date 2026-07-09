@@ -326,8 +326,6 @@ func TestCorrectToolName(t *testing.T) {
 		{"executeBash", "bash", true},
 		{"exec_bash", "bash", true},
 		{"execBash", "bash", true},
-		{"exec_command", "bash", true},
-		{"execCommand", "bash", true},
 		{"unknown_tool", "unknown_tool", false},
 		{"read", "read", false},
 		{"edit", "edit", false},
@@ -574,44 +572,5 @@ func TestCorrectToolParameters(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-func TestCorrectBashCommandParameters(t *testing.T) {
-	corrector := NewCodexToolCorrector()
-
-	input := `{
-		"tool_calls": [{
-			"function": {
-				"name": "exec_command",
-				"arguments": "{\"cmd\":\"gitcommit-m\\\"Updatechargeanimationassets\\\"\"}"
-			}
-		}]
-	}`
-
-	corrected, changed := corrector.CorrectToolCallsInSSEData(input)
-	if !changed {
-		t.Fatal("expected bash command parameters to be corrected")
-	}
-
-	var result map[string]any
-	if err := json.Unmarshal([]byte(corrected), &result); err != nil {
-		t.Fatalf("failed to parse corrected data: %v", err)
-	}
-	toolCalls := result["tool_calls"].([]any)
-	function := toolCalls[0].(map[string]any)["function"].(map[string]any)
-	if function["name"] != "bash" {
-		t.Fatalf("expected tool name bash, got %v", function["name"])
-	}
-
-	var args map[string]any
-	if err := json.Unmarshal([]byte(function["arguments"].(string)), &args); err != nil {
-		t.Fatalf("failed to parse arguments: %v", err)
-	}
-	if _, exists := args["cmd"]; exists {
-		t.Fatal("did not expect cmd argument after correction")
-	}
-	if got := args["command"]; got != `gitcommit-m"Updatechargeanimationassets"` {
-		t.Fatalf("command = %q", got)
 	}
 }

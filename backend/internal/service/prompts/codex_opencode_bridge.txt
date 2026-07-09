@@ -34,7 +34,6 @@ You are running Codex through OpenCode, an open-source terminal coding assistant
 
 **Execution:**
 - `bash`   - Run shell commands
-  - Preserve shell command whitespace exactly; never concatenate command tokens or quoted words.
   - No workdir parameter; do not include it in tool calls.
   - Always include a short description for the command.
   - Do not use cd; use absolute paths in commands.
