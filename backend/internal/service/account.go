@@ -1033,6 +1033,42 @@ func (a *Account) IsOpenAIOfficial() bool {
 	return u.Host == "api.openai.com" || u.Host == "chatgpt.com"
 }
 
+func (a *Account) openAIResponsesAPISupportOverride() (bool, bool) {
+	if a == nil || a.Extra == nil {
+		return false, false
+	}
+	if a.IsOpenAIApiKey() {
+		if enabled, ok := a.Extra["openai_apikey_responses_api_enabled"].(bool); ok {
+			return enabled, true
+		}
+	}
+	if enabled, ok := a.Extra["openai_responses_api_enabled"].(bool); ok {
+		return enabled, true
+	}
+	return false, false
+}
+
+// SupportsOpenAIResponsesAPI reports whether /v1/responses should be sent to
+// the upstream as Responses API instead of being downgraded to Chat Completions.
+func (a *Account) SupportsOpenAIResponsesAPI() bool {
+	if a == nil || !a.IsOpenAI() {
+		return false
+	}
+	if !a.IsOpenAIApiKey() {
+		return true
+	}
+	if a.IsOpenAIOfficial() {
+		return true
+	}
+	if enabled, ok := a.openAIResponsesAPISupportOverride(); ok {
+		return enabled
+	}
+	if a.IsOpenAIPassthroughEnabled() {
+		return true
+	}
+	return a.ResolveOpenAIResponsesWebSocketV2Mode(OpenAIWSIngressModeOff) != OpenAIWSIngressModeOff
+}
+
 func (a *Account) GetOpenAIAccessToken() string {
 	if !a.IsOpenAI() {
 		return ""

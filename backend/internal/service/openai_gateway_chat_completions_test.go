@@ -558,7 +558,7 @@ func TestForwardResponsesPassthroughSendsToolsAndConvertsToolCall(t *testing.T) 
 			"id":"chatcmpl_tool",
 			"model":"deepseek-ai/deepseek-v4-pro",
 			"choices":[{"message":{"role":"assistant","reasoning_content":"think about git status","tool_calls":[{"id":"call_abc","type":"function","function":{"name":"exec_cmd","arguments":"{\"command\":\"git status --short\"}"}}]},"finish_reason":"tool_calls"}],
-			"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}
+			"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15,"prompt_tokens_details":{"cached_tokens":7}}
 		}`)),
 	}}
 	svc := &OpenAIGatewayService{
@@ -599,7 +599,9 @@ func TestForwardResponsesPassthroughSendsToolsAndConvertsToolCall(t *testing.T) 
 	require.Equal(t, "exec_cmd", gjson.GetBytes(upstream.lastBody, "tools.0.function.name").String())
 	require.Equal(t, "exec_cmd", gjson.GetBytes(upstream.lastBody, "tool_choice.function.name").String())
 
+	require.Equal(t, 7, result.Usage.CacheReadInputTokens)
 	output := rec.Body.String()
+	require.Equal(t, int64(7), gjson.Get(output, "usage.input_tokens_details.cached_tokens").Int())
 	require.Equal(t, "reasoning", gjson.Get(output, "output.0.type").String())
 	require.Equal(t, "think about git status", gjson.Get(output, "output.0.encrypted_content").String())
 	require.Equal(t, "function_call", gjson.Get(output, "output.1.type").String())
@@ -620,7 +622,7 @@ func TestHandleResponsesPassthroughStreamConvertsToolCalls(t *testing.T) {
 		`data: {"id":"chatcmpl_1","choices":[{"delta":{"reasoning_content":"think stream"},"finish_reason":null}]}`,
 		`data: {"id":"chatcmpl_1","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_abc","type":"function","function":{"name":"exec_cmd","arguments":"{\"command\":"}}]},"finish_reason":null}]}`,
 		`data: {"id":"chatcmpl_1","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"pwd\"}"}}]},"finish_reason":null}]}`,
-		`data: {"id":"chatcmpl_1","choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`,
+		`data: {"id":"chatcmpl_1","choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5,"prompt_tokens_details":{"cached_tokens":4}}}`,
 		`data: [DONE]`,
 		``,
 	}, "\n")
@@ -639,6 +641,7 @@ func TestHandleResponsesPassthroughStreamConvertsToolCalls(t *testing.T) {
 	result, err := svc.handleResponsesPassthroughStream(resp, c, "deepseek-ai/deepseek-v4-pro", "deepseek-ai/deepseek-v4-pro", "deepseek-ai/deepseek-v4-pro", timeNowForTest())
 	require.NoError(t, err)
 	require.NotNil(t, result)
+	require.Equal(t, 4, result.Usage.CacheReadInputTokens)
 
 	body := rec.Body.String()
 	require.Contains(t, body, `"type":"response.output_item.added"`)
@@ -665,6 +668,7 @@ func TestHandleResponsesPassthroughStreamConvertsToolCalls(t *testing.T) {
 	require.Len(t, completedPayloads, 1)
 	require.Equal(t, "reasoning", gjson.Get(completedPayloads[0], "response.output.0.type").String())
 	require.Equal(t, "think stream", gjson.Get(completedPayloads[0], "response.output.0.encrypted_content").String())
+	require.Equal(t, int64(4), gjson.Get(completedPayloads[0], "response.usage.input_tokens_details.cached_tokens").Int())
 	require.Equal(t, "function_call", gjson.Get(completedPayloads[0], "response.output.1.type").String())
 	require.Equal(t, "call_abc", gjson.Get(completedPayloads[0], "response.output.1.call_id").String())
 	respID := gjson.Get(completedPayloads[0], "response.id").String()

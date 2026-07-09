@@ -5,6 +5,7 @@ package routes
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
@@ -95,7 +97,12 @@ func authRouteDockerAvailable() bool {
 		if socket == "" {
 			continue
 		}
-		if _, err := os.Stat(socket); err == nil {
+		if _, err := os.Stat(socket); err != nil {
+			continue
+		}
+		conn, err := net.DialTimeout("unix", socket, 200*time.Millisecond)
+		if err == nil {
+			_ = conn.Close()
 			return true
 		}
 	}

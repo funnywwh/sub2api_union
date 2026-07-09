@@ -71,6 +71,98 @@ func TestAccount_IsOpenAIOAuthPassthroughEnabled(t *testing.T) {
 	})
 }
 
+func TestAccount_SupportsOpenAIResponsesAPI(t *testing.T) {
+	tests := []struct {
+		name    string
+		account *Account
+		want    bool
+	}{
+		{
+			name:    "OpenAI OAuth uses Responses",
+			account: &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth},
+			want:    true,
+		},
+		{
+			name:    "official API key uses Responses",
+			account: &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"base_url": "https://api.openai.com"}},
+			want:    true,
+		},
+		{
+			name:    "custom API key defaults to Chat Completions compatibility",
+			account: &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"base_url": "https://api.deepseek.com"}},
+			want:    false,
+		},
+		{
+			name: "custom API key with passthrough uses Responses",
+			account: &Account{
+				Platform:    PlatformOpenAI,
+				Type:        AccountTypeAPIKey,
+				Credentials: map[string]any{"base_url": "https://sub2api.example.com"},
+				Extra:       map[string]any{"openai_passthrough": true},
+			},
+			want: true,
+		},
+		{
+			name: "custom API key with typed Responses flag uses Responses",
+			account: &Account{
+				Platform:    PlatformOpenAI,
+				Type:        AccountTypeAPIKey,
+				Credentials: map[string]any{"base_url": "https://sub2api.example.com"},
+				Extra:       map[string]any{"openai_apikey_responses_api_enabled": true},
+			},
+			want: true,
+		},
+		{
+			name: "custom API key with generic Responses flag uses Responses",
+			account: &Account{
+				Platform:    PlatformOpenAI,
+				Type:        AccountTypeAPIKey,
+				Credentials: map[string]any{"base_url": "https://sub2api.example.com"},
+				Extra:       map[string]any{"openai_responses_api_enabled": true},
+			},
+			want: true,
+		},
+		{
+			name: "explicit Responses false overrides passthrough",
+			account: &Account{
+				Platform:    PlatformOpenAI,
+				Type:        AccountTypeAPIKey,
+				Credentials: map[string]any{"base_url": "https://sub2api.example.com"},
+				Extra: map[string]any{
+					"openai_apikey_responses_api_enabled": false,
+					"openai_passthrough":                  true,
+				},
+			},
+			want: false,
+		},
+		{
+			name: "custom API key with WS mode is Responses capable",
+			account: &Account{
+				Platform:    PlatformOpenAI,
+				Type:        AccountTypeAPIKey,
+				Credentials: map[string]any{"base_url": "https://sub2api.example.com"},
+				Extra:       map[string]any{"openai_apikey_responses_websockets_v2_mode": OpenAIWSIngressModeCtxPool},
+			},
+			want: true,
+		},
+		{
+			name: "non OpenAI account does not claim Responses support",
+			account: &Account{
+				Platform:    PlatformAnthropic,
+				Type:        AccountTypeAPIKey,
+				Credentials: map[string]any{"base_url": "https://api.deepseek.com"},
+			},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, tt.account.SupportsOpenAIResponsesAPI())
+		})
+	}
+}
+
 func TestAccount_IsCodexCLIOnlyEnabled(t *testing.T) {
 	t.Run("OpenAI OAuth 开启", func(t *testing.T) {
 		account := &Account{

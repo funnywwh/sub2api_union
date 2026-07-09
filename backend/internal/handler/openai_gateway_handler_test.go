@@ -479,44 +479,103 @@ func TestOpenAIResponses_SetsClientTransportHTTP(t *testing.T) {
 	require.Equal(t, service.OpenAIClientTransportHTTP, service.GetOpenAIClientTransport(c))
 }
 
-func TestShouldUseOpenAIResponsesCompatPassthrough(t *testing.T) {
+func TestShouldUseOpenAIResponsesChatCompletionsCompatibility(t *testing.T) {
 	tests := []struct {
 		name    string
 		account *service.Account
 		want    bool
 	}{
 		{
-			name: "custom api key without passthrough uses compat conversion",
-			account: &service.Account{
-				Platform:    service.PlatformOpenAI,
-				Type:        service.AccountTypeAPIKey,
-				Credentials: map[string]any{"base_url": "https://compatible.example.com"},
-			},
-			want: true,
+			name:    "custom API key without Responses support uses compatibility path",
+			account: &service.Account{Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey, Credentials: map[string]any{"base_url": "https://api.deepseek.com"}},
+			want:    true,
 		},
 		{
-			name: "custom api key with openai passthrough uses raw OpenAI forward",
+			name: "custom API key passthrough uses native Responses path",
 			account: &service.Account{
 				Platform:    service.PlatformOpenAI,
 				Type:        service.AccountTypeAPIKey,
-				Credentials: map[string]any{"base_url": "https://compatible.example.com"},
+				Credentials: map[string]any{"base_url": "https://sub2api.example.com"},
 				Extra:       map[string]any{"openai_passthrough": true},
 			},
 			want: false,
 		},
 		{
-			name: "official api key uses raw OpenAI forward",
+			name: "custom API key Responses flag uses native Responses path",
 			account: &service.Account{
-				Platform: service.PlatformOpenAI,
-				Type:     service.AccountTypeAPIKey,
+				Platform:    service.PlatformOpenAI,
+				Type:        service.AccountTypeAPIKey,
+				Credentials: map[string]any{"base_url": "https://sub2api.example.com"},
+				Extra:       map[string]any{"openai_apikey_responses_api_enabled": true},
 			},
+			want: false,
+		},
+		{
+			name:    "official API key uses native Responses path",
+			account: &service.Account{Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey, Credentials: map[string]any{"base_url": "https://api.openai.com"}},
+			want:    false,
+		},
+		{
+			name:    "OAuth uses native Responses path",
+			account: &service.Account{Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth},
+			want:    false,
+		},
+		{
+			name:    "non OpenAI API key does not use OpenAI compatibility path",
+			account: &service.Account{Platform: service.PlatformAnthropic, Type: service.AccountTypeAPIKey},
+			want:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, shouldUseOpenAIResponsesChatCompletionsCompatibility(tt.account))
+		})
+	}
+}
+
+func TestShouldAllowOpenAIResponsesHTTPPreviousResponseIDCompatibility(t *testing.T) {
+	compatAccount := &service.Account{
+		Platform:    service.PlatformOpenAI,
+		Type:        service.AccountTypeAPIKey,
+		Credentials: map[string]any{"base_url": "https://api.deepseek.com"},
+	}
+	responsesCapableAccount := &service.Account{
+		Platform:    service.PlatformOpenAI,
+		Type:        service.AccountTypeAPIKey,
+		Credentials: map[string]any{"base_url": "https://sub2api.example.com"},
+		Extra:       map[string]any{"openai_passthrough": true},
+	}
+
+	tests := []struct {
+		name string
+		acct *service.Account
+		kind string
+		want bool
+	}{
+		{
+			name: "compat path allows gateway-local response id",
+			acct: compatAccount,
+			kind: service.OpenAIPreviousResponseIDKindUnknown,
+			want: true,
+		},
+		{
+			name: "compat path rejects official response id on HTTP",
+			acct: compatAccount,
+			kind: service.OpenAIPreviousResponseIDKindResponseID,
+			want: false,
+		},
+		{
+			name: "native Responses path rejects HTTP previous response id",
+			acct: responsesCapableAccount,
+			kind: service.OpenAIPreviousResponseIDKindUnknown,
 			want: false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, shouldUseOpenAIResponsesCompatPassthrough(tt.account))
+			require.Equal(t, tt.want, shouldAllowOpenAIResponsesHTTPPreviousResponseIDCompatibility(tt.acct, tt.kind))
 		})
 	}
 }
@@ -573,7 +632,7 @@ func TestOpenAIResponses_RejectsHTTPContinuationPreviousResponseID(t *testing.T)
 	h := newOpenAIHandlerForPreviousResponseIDValidation(t, nil)
 	h.Responses(c)
 
-	require.Equal(t, http.StatusBadRequest, w.Code)
+	require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
 	require.Contains(t, w.Body.String(), "Responses WebSocket v2")
 	require.Contains(t, w.Body.String(), "previous_response_id")
 }

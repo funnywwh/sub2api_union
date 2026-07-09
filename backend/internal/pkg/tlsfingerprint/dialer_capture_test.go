@@ -4,7 +4,9 @@ package tlsfingerprint
 
 import (
 	"context"
+	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -44,6 +46,7 @@ type CapturedFingerprint struct {
 // Run: go test -v -run TestDialerAgainstCaptureServer ./internal/pkg/tlsfingerprint/...
 func TestDialerAgainstCaptureServer(t *testing.T) {
 	captureURL := os.Getenv("TLSFINGERPRINT_CAPTURE_URL")
+	usingDefaultCaptureURL := captureURL == ""
 	if captureURL == "" {
 		captureURL = "https://tls.sub2api.org:8090"
 	}
@@ -96,7 +99,7 @@ func TestDialerAgainstCaptureServer(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			captured := fetchCapturedFingerprint(t, captureURL, tc.profile)
+			captured := fetchCapturedFingerprint(t, captureURL, usingDefaultCaptureURL, tc.profile)
 			if captured == nil {
 				return
 			}
@@ -187,7 +190,7 @@ func TestDialerAgainstCaptureServer(t *testing.T) {
 	}
 }
 
-func fetchCapturedFingerprint(t *testing.T, captureURL string, profile *Profile) *CapturedFingerprint {
+func fetchCapturedFingerprint(t *testing.T, captureURL string, allowSkip bool, profile *Profile) *CapturedFingerprint {
 	t.Helper()
 
 	dialer := NewDialer(profile, nil)
@@ -211,10 +214,14 @@ func fetchCapturedFingerprint(t *testing.T, captureURL string, profile *Profile)
 
 	resp, err := client.Do(req)
 	if err != nil {
+		if allowSkip && isExternalCaptureUnavailable(err) {
+			t.Skipf("default TLS fingerprint capture server unavailable: %v", err)
+			return nil
+		}
 		t.Fatalf("request failed: %v", err)
 		return nil
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -230,6 +237,19 @@ func fetchCapturedFingerprint(t *testing.T, captureURL string, profile *Profile)
 	}
 
 	return &fp
+}
+
+func isExternalCaptureUnavailable(err error) bool {
+	var certInvalid x509.CertificateInvalidError
+	if errors.As(err, &certInvalid) && certInvalid.Reason == x509.Expired {
+		return true
+	}
+	return strings.Contains(err.Error(), "certificate has expired") ||
+		strings.Contains(err.Error(), "certificate is not yet valid") ||
+		strings.Contains(err.Error(), "connection refused") ||
+		strings.Contains(err.Error(), "no such host") ||
+		strings.Contains(err.Error(), "i/o timeout") ||
+		strings.Contains(err.Error(), "context deadline exceeded")
 }
 
 func uint16sToInts(vals []uint16) []int {

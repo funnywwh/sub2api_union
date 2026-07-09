@@ -5,8 +5,8 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"fmt"
-	"regexp"
 	"reflect"
+	"regexp"
 	"testing"
 	"time"
 

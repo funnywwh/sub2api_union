@@ -183,7 +183,7 @@ func (s *HappyHorseGatewayService) ForwardGenerate(ctx context.Context, account 
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 	if readErr != nil {
 		return nil, readErr
@@ -228,7 +228,7 @@ func (s *HappyHorseGatewayService) ForwardStatus(ctx context.Context, account *A
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 	if readErr != nil {
 		return nil, readErr
