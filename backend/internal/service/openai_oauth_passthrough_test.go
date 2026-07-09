@@ -1076,6 +1076,108 @@ func TestOpenAIGatewayService_APIKeyPassthrough_PreservesBodyAndUsesResponsesEnd
 	require.Empty(t, upstream.lastReq.Header.Get("X-Test"))
 }
 
+func TestOpenAIGatewayService_APIKeyPassthrough_NonStreamCorrectsResponsesToolNames(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(nil))
+	c.Request.Header.Set("User-Agent", "codex_cli_rs/0.1.0")
+
+	originalBody := []byte(`{"model":"gpt-5.2","stream":false,"input":[{"type":"text","text":"hi"}]}`)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid"}},
+		Body: io.NopCloser(strings.NewReader(
+			`{"output":[{"type":"function_call","name":"apply_patch","arguments":"{\"file_path\":\"/tmp/a.txt\",\"old_string\":\"a\",\"new_string\":\"b\"}"}],"usage":{"input_tokens":1,"output_tokens":1,"input_tokens_details":{"cached_tokens":0}}}`,
+		)),
+	}
+	upstream := &httpUpstreamRecorder{resp: resp}
+
+	svc := &OpenAIGatewayService{
+		cfg:           &config.Config{Gateway: config.GatewayConfig{ForceCodexCLI: false}},
+		httpUpstream:  upstream,
+		toolCorrector: NewCodexToolCorrector(),
+	}
+
+	account := &Account{
+		ID:             458,
+		Name:           "apikey-acc",
+		Platform:       PlatformOpenAI,
+		Type:           AccountTypeAPIKey,
+		Concurrency:    1,
+		Credentials:    map[string]any{"api_key": "sk-api-key", "base_url": "https://api.openai.com"},
+		Extra:          map[string]any{"openai_passthrough": true},
+		Status:         StatusActive,
+		Schedulable:    true,
+		RateMultiplier: f64p(1),
+	}
+
+	result, err := svc.Forward(context.Background(), c, account, originalBody)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.False(t, result.Stream)
+	require.Equal(t, 1, result.Usage.InputTokens)
+	require.Equal(t, 1, result.Usage.OutputTokens)
+
+	body := rec.Body.String()
+	require.Contains(t, body, `"name":"edit"`)
+	require.Contains(t, body, `filePath`)
+	require.NotContains(t, body, `"name":"apply_patch"`)
+	require.NotContains(t, body, `file_path`)
+}
+
+func TestOpenAIGatewayService_OAuthPassthrough_NonStreamKeepsResponsesToolNames(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses/compact", bytes.NewReader(nil))
+	c.Request.Header.Set("User-Agent", "codex_cli_rs/0.1.0")
+
+	originalBody := []byte(`{"model":"gpt-5.1-codex","stream":true,"store":true,"instructions":"local-test-instructions","input":[{"type":"text","text":"hi"}]}`)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid"}},
+		Body: io.NopCloser(strings.NewReader(
+			`{"output":[{"type":"function_call","name":"apply_patch","arguments":"{\"file_path\":\"/tmp/a.txt\",\"old_string\":\"a\",\"new_string\":\"b\"}"}],"usage":{"input_tokens":1,"output_tokens":1,"input_tokens_details":{"cached_tokens":0}}}`,
+		)),
+	}
+	upstream := &httpUpstreamRecorder{resp: resp}
+
+	svc := &OpenAIGatewayService{
+		cfg:           &config.Config{Gateway: config.GatewayConfig{ForceCodexCLI: false}},
+		httpUpstream:  upstream,
+		toolCorrector: NewCodexToolCorrector(),
+	}
+
+	account := &Account{
+		ID:             459,
+		Name:           "oauth-acc",
+		Platform:       PlatformOpenAI,
+		Type:           AccountTypeOAuth,
+		Concurrency:    1,
+		Credentials:    map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-acc"},
+		Extra:          map[string]any{"openai_passthrough": true},
+		Status:         StatusActive,
+		Schedulable:    true,
+		RateMultiplier: f64p(1),
+	}
+
+	result, err := svc.Forward(context.Background(), c, account, originalBody)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.False(t, result.Stream)
+	require.Equal(t, 1, result.Usage.InputTokens)
+	require.Equal(t, 1, result.Usage.OutputTokens)
+
+	body := rec.Body.String()
+	require.Contains(t, body, `"name":"apply_patch"`)
+	require.Contains(t, body, `file_path`)
+	require.NotContains(t, body, `"name":"edit"`)
+	require.NotContains(t, body, `filePath`)
+}
+
 func TestOpenAIGatewayService_APIKeyPassthrough_StreamCorrectsResponsesToolNames(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -1087,6 +1189,10 @@ func TestOpenAIGatewayService_APIKeyPassthrough_StreamCorrectsResponsesToolNames
 	originalBody := []byte(`{"model":"gpt-5.2","stream":true,"input":[{"type":"text","text":"hi"}]}`)
 	upstreamSSE := strings.Join([]string{
 		`data: {"type":"response.output_item.added","item":{"id":"fc_1","type":"function_call","name":"apply_patch","arguments":"{\"file_path\":\"/tmp/a.txt\",\"old_string\":\"a\",\"new_string\":\"b\"}"}}`,
+		"",
+		`data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"{\"file_path\":\"/tmp/a.txt\","}`,
+		"",
+		`data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"\"old_string\":\"a\",\"new_string\":\"b\"}"}`,
 		"",
 		`data: {"type":"response.function_call_arguments.done","item_id":"fc_1","arguments":"{\"file_path\":\"/tmp/a.txt\",\"old_string\":\"a\",\"new_string\":\"b\"}"}`,
 		"",
@@ -1129,6 +1235,7 @@ func TestOpenAIGatewayService_APIKeyPassthrough_StreamCorrectsResponsesToolNames
 	require.Equal(t, 1, result.Usage.OutputTokens)
 
 	body := rec.Body.String()
+	require.Contains(t, body, `response.function_call_arguments.delta`)
 	require.Contains(t, body, `"name":"edit"`)
 	require.Contains(t, body, `filePath`)
 	require.NotContains(t, body, `"name":"apply_patch"`)

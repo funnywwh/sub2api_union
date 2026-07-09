@@ -2836,7 +2836,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		usage = result.usage
 		firstTokenMs = result.firstTokenMs
 	} else {
-		usage, err = s.handleNonStreamingResponsePassthrough(ctx, resp, c, reqModel, upstreamPassthroughModel)
+		usage, err = s.handleNonStreamingResponsePassthrough(ctx, resp, c, account, reqModel, upstreamPassthroughModel)
 		if err != nil {
 			return nil, err
 		}
@@ -3325,6 +3325,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	needModelReplace := strings.TrimSpace(originalModel) != "" && strings.TrimSpace(mappedModel) != "" && strings.TrimSpace(originalModel) != strings.TrimSpace(mappedModel)
 	shouldCorrectToolCalls := shouldCorrectOpenAIPassthroughToolCalls(account)
 	responseToolNamesByItemID := make(map[string]string)
+	responseArgumentDeltas := newResponsesFunctionCallArgumentDeltaState()
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -3364,6 +3365,12 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 					eventType = strings.TrimSpace(gjson.GetBytes(dataBytes, "type").String())
 				}
 				trackResponsesToolNameByItemID(dataBytes, responseToolNamesByItemID)
+				if correctedData, corrected := s.correctResponsesFunctionCallArgumentsDelta(dataBytes, responseToolNamesByItemID, responseArgumentDeltas); corrected {
+					dataBytes = correctedData
+					trimmedData = strings.TrimSpace(string(correctedData))
+					line = "data: " + string(correctedData)
+					eventType = strings.TrimSpace(gjson.GetBytes(dataBytes, "type").String())
+				}
 				if correctedData, corrected := s.correctResponsesFunctionCallArgumentsDone(dataBytes, responseToolNamesByItemID); corrected {
 					dataBytes = correctedData
 					trimmedData = strings.TrimSpace(string(correctedData))
@@ -3454,6 +3461,7 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 	ctx context.Context,
 	resp *http.Response,
 	c *gin.Context,
+	account *Account,
 	originalModel string,
 	mappedModel string,
 ) (*OpenAIUsage, error) {
@@ -3491,6 +3499,9 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 	}
 	if originalModel != "" && mappedModel != "" && originalModel != mappedModel {
 		body = s.replaceModelInResponseBody(body, mappedModel, originalModel)
+	}
+	if shouldCorrectOpenAIPassthroughToolCalls(account) {
+		body = s.correctToolCallsInResponseBody(body)
 	}
 	c.Data(resp.StatusCode, contentType, body)
 	return usage, nil
@@ -4424,6 +4435,74 @@ func trackResponsesToolNameByItemID(data []byte, namesByItemID map[string]string
 	namesByItemID[itemID] = name
 }
 
+type responsesFunctionCallArgumentDeltaState struct {
+	rawByItemID       map[string]string
+	correctedByItemID map[string]string
+}
+
+func newResponsesFunctionCallArgumentDeltaState() *responsesFunctionCallArgumentDeltaState {
+	return &responsesFunctionCallArgumentDeltaState{
+		rawByItemID:       make(map[string]string),
+		correctedByItemID: make(map[string]string),
+	}
+}
+
+func resolveResponsesToolNameByItemID(namesByItemID map[string]string, itemID string) string {
+	toolName := strings.TrimSpace(namesByItemID[itemID])
+	if mapped, ok := codexToolNameMapping[toolName]; ok {
+		toolName = mapped
+	}
+	return toolName
+}
+
+func (s *OpenAIGatewayService) correctResponsesFunctionCallArgumentsDelta(data []byte, namesByItemID map[string]string, state *responsesFunctionCallArgumentDeltaState) ([]byte, bool) {
+	if s == nil || s.toolCorrector == nil || len(data) == 0 || len(namesByItemID) == 0 || state == nil {
+		return data, false
+	}
+	if strings.TrimSpace(gjson.GetBytes(data, "type").String()) != "response.function_call_arguments.delta" {
+		return data, false
+	}
+	itemID := strings.TrimSpace(gjson.GetBytes(data, "item_id").String())
+	if itemID == "" {
+		return data, false
+	}
+	toolName := resolveResponsesToolNameByItemID(namesByItemID, itemID)
+	if toolName != "bash" && toolName != "edit" {
+		return data, false
+	}
+	delta := gjson.GetBytes(data, "delta")
+	if !delta.Exists() || delta.Type != gjson.String {
+		return data, false
+	}
+
+	rawArgs := state.rawByItemID[itemID] + delta.Str
+	state.rawByItemID[itemID] = rawArgs
+	if !gjson.Valid(rawArgs) || !gjson.Parse(rawArgs).IsObject() {
+		next, err := sjson.SetBytes(data, "delta", "")
+		if err != nil {
+			return data, false
+		}
+		return next, delta.Str != ""
+	}
+
+	correctedArgs, corrected := s.toolCorrector.correctToolArgumentsJSON(rawArgs, toolName)
+	if !corrected {
+		correctedArgs = rawArgs
+	}
+	previousCorrected := state.correctedByItemID[itemID]
+	nextDelta := correctedArgs
+	if strings.HasPrefix(correctedArgs, previousCorrected) {
+		nextDelta = strings.TrimPrefix(correctedArgs, previousCorrected)
+	}
+	state.correctedByItemID[itemID] = correctedArgs
+
+	next, err := sjson.SetBytes(data, "delta", nextDelta)
+	if err != nil {
+		return data, false
+	}
+	return next, nextDelta != delta.Str
+}
+
 func (s *OpenAIGatewayService) correctResponsesFunctionCallArgumentsDone(data []byte, namesByItemID map[string]string) ([]byte, bool) {
 	if s == nil || s.toolCorrector == nil || len(data) == 0 || len(namesByItemID) == 0 {
 		return data, false
@@ -4435,10 +4514,7 @@ func (s *OpenAIGatewayService) correctResponsesFunctionCallArgumentsDone(data []
 	if itemID == "" {
 		return data, false
 	}
-	toolName := strings.TrimSpace(namesByItemID[itemID])
-	if mapped, ok := codexToolNameMapping[toolName]; ok {
-		toolName = mapped
-	}
+	toolName := resolveResponsesToolNameByItemID(namesByItemID, itemID)
 	if toolName == "" {
 		return data, false
 	}
