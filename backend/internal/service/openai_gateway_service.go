@@ -4086,6 +4086,8 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 	}
 
 	needModelReplace := originalModel != mappedModel
+	responseToolNamesByItemID := make(map[string]string)
+	responseArgumentDeltas := newResponsesFunctionCallArgumentDeltaState()
 	resultWithUsage := func() *openaiStreamingResult {
 		return &openaiStreamingResult{usage: usage, firstTokenMs: firstTokenMs}
 	}
@@ -4164,6 +4166,9 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 			// Fast path: most events do not contain model field values.
 			if needModelReplace && mappedModel != "" && strings.Contains(data, mappedModel) {
 				line = s.replaceModelInSSELine(line, mappedModel, originalModel)
+				if replacedData, replaced := extractOpenAISSEDataLine(line); replaced {
+					data = replacedData
+				}
 			}
 
 			dataBytes := []byte(data)
@@ -4185,6 +4190,19 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 
 			// Correct Codex tool calls if needed (apply_patch -> edit, etc.)
 			if correctedData, corrected := s.correctToolCallsInSSEPayload(dataBytes); corrected {
+				dataBytes = correctedData
+				data = string(correctedData)
+				line = "data: " + data
+				eventType = strings.TrimSpace(gjson.GetBytes(dataBytes, "type").String())
+			}
+			trackResponsesToolNameByItemID(dataBytes, responseToolNamesByItemID)
+			if correctedData, corrected := s.correctResponsesFunctionCallArgumentsDelta(dataBytes, responseToolNamesByItemID, responseArgumentDeltas); corrected {
+				dataBytes = correctedData
+				data = string(correctedData)
+				line = "data: " + data
+				eventType = strings.TrimSpace(gjson.GetBytes(dataBytes, "type").String())
+			}
+			if correctedData, corrected := s.correctResponsesFunctionCallArgumentsDone(dataBytes, responseToolNamesByItemID); corrected {
 				dataBytes = correctedData
 				data = string(correctedData)
 				line = "data: " + data
@@ -4421,18 +4439,16 @@ func trackResponsesToolNameByItemID(data []byte, namesByItemID map[string]string
 	default:
 		return
 	}
-	itemID := strings.TrimSpace(gjson.GetBytes(data, "item.id").String())
-	if itemID == "" {
-		return
-	}
-	name := strings.TrimSpace(gjson.GetBytes(data, "item.name").String())
-	if mapped, ok := codexToolNameMapping[name]; ok {
-		name = mapped
-	}
+	name := normalizeResponsesToolName(gjson.GetBytes(data, "item.name").String())
 	if name == "" {
 		return
 	}
-	namesByItemID[itemID] = name
+	for _, path := range []string{"item.id", "item.call_id"} {
+		itemID := strings.TrimSpace(gjson.GetBytes(data, path).String())
+		if itemID != "" {
+			namesByItemID[itemID] = name
+		}
+	}
 }
 
 type responsesFunctionCallArgumentDeltaState struct {
@@ -4447,42 +4463,91 @@ func newResponsesFunctionCallArgumentDeltaState() *responsesFunctionCallArgument
 	}
 }
 
-func resolveResponsesToolNameByItemID(namesByItemID map[string]string, itemID string) string {
-	toolName := strings.TrimSpace(namesByItemID[itemID])
+func normalizeResponsesToolName(name string) string {
+	toolName := strings.TrimSpace(name)
 	if mapped, ok := codexToolNameMapping[toolName]; ok {
-		toolName = mapped
+		return mapped
 	}
 	return toolName
 }
 
+func resolveResponsesToolNameByItemID(namesByItemID map[string]string, itemID string) string {
+	if namesByItemID == nil || itemID == "" {
+		return ""
+	}
+	return normalizeResponsesToolName(namesByItemID[itemID])
+}
+
+func responsesFunctionCallArgumentEventKey(data []byte) string {
+	for _, path := range []string{"item_id", "call_id"} {
+		itemID := strings.TrimSpace(gjson.GetBytes(data, path).String())
+		if itemID != "" {
+			return itemID
+		}
+	}
+	return ""
+}
+
+func responsesFunctionCallArgumentEventToolName(data []byte, namesByItemID map[string]string, itemID string) string {
+	if name := normalizeResponsesToolName(gjson.GetBytes(data, "name").String()); name != "" {
+		return name
+	}
+	if name := resolveResponsesToolNameByItemID(namesByItemID, itemID); name != "" {
+		return name
+	}
+	callID := strings.TrimSpace(gjson.GetBytes(data, "call_id").String())
+	if callID != "" && callID != itemID {
+		return resolveResponsesToolNameByItemID(namesByItemID, callID)
+	}
+	return ""
+}
+
+func correctResponsesFunctionCallArgumentEventName(data []byte) ([]byte, bool) {
+	nameResult := gjson.GetBytes(data, "name")
+	if !nameResult.Exists() || nameResult.Type != gjson.String {
+		return data, false
+	}
+	rawName := strings.TrimSpace(nameResult.Str)
+	toolName := normalizeResponsesToolName(rawName)
+	if toolName == "" || toolName == rawName {
+		return data, false
+	}
+	next, err := sjson.SetBytes(data, "name", toolName)
+	if err != nil {
+		return data, false
+	}
+	return next, true
+}
+
 func (s *OpenAIGatewayService) correctResponsesFunctionCallArgumentsDelta(data []byte, namesByItemID map[string]string, state *responsesFunctionCallArgumentDeltaState) ([]byte, bool) {
-	if s == nil || s.toolCorrector == nil || len(data) == 0 || len(namesByItemID) == 0 || state == nil {
+	if s == nil || s.toolCorrector == nil || len(data) == 0 || state == nil {
 		return data, false
 	}
 	if strings.TrimSpace(gjson.GetBytes(data, "type").String()) != "response.function_call_arguments.delta" {
 		return data, false
 	}
-	itemID := strings.TrimSpace(gjson.GetBytes(data, "item_id").String())
+	updated, correctedName := correctResponsesFunctionCallArgumentEventName(data)
+	itemID := responsesFunctionCallArgumentEventKey(updated)
 	if itemID == "" {
-		return data, false
+		return updated, correctedName
 	}
-	toolName := resolveResponsesToolNameByItemID(namesByItemID, itemID)
+	toolName := responsesFunctionCallArgumentEventToolName(updated, namesByItemID, itemID)
 	if toolName != "bash" && toolName != "edit" {
-		return data, false
+		return updated, correctedName
 	}
-	delta := gjson.GetBytes(data, "delta")
+	delta := gjson.GetBytes(updated, "delta")
 	if !delta.Exists() || delta.Type != gjson.String {
-		return data, false
+		return updated, correctedName
 	}
 
 	rawArgs := state.rawByItemID[itemID] + delta.Str
 	state.rawByItemID[itemID] = rawArgs
 	if !gjson.Valid(rawArgs) || !gjson.Parse(rawArgs).IsObject() {
-		next, err := sjson.SetBytes(data, "delta", "")
+		next, err := sjson.SetBytes(updated, "delta", "")
 		if err != nil {
-			return data, false
+			return updated, correctedName
 		}
-		return next, delta.Str != ""
+		return next, correctedName || delta.Str != ""
 	}
 
 	correctedArgs, corrected := s.toolCorrector.correctToolArgumentsJSON(rawArgs, toolName)
@@ -4496,29 +4561,28 @@ func (s *OpenAIGatewayService) correctResponsesFunctionCallArgumentsDelta(data [
 	}
 	state.correctedByItemID[itemID] = correctedArgs
 
-	next, err := sjson.SetBytes(data, "delta", nextDelta)
+	next, err := sjson.SetBytes(updated, "delta", nextDelta)
 	if err != nil {
-		return data, false
+		return updated, correctedName
 	}
-	return next, nextDelta != delta.Str
+	return next, correctedName || nextDelta != delta.Str
 }
 
 func (s *OpenAIGatewayService) correctResponsesFunctionCallArgumentsDone(data []byte, namesByItemID map[string]string) ([]byte, bool) {
-	if s == nil || s.toolCorrector == nil || len(data) == 0 || len(namesByItemID) == 0 {
+	if s == nil || s.toolCorrector == nil || len(data) == 0 {
 		return data, false
 	}
 	if strings.TrimSpace(gjson.GetBytes(data, "type").String()) != "response.function_call_arguments.done" {
 		return data, false
 	}
-	itemID := strings.TrimSpace(gjson.GetBytes(data, "item_id").String())
-	if itemID == "" {
-		return data, false
-	}
-	toolName := resolveResponsesToolNameByItemID(namesByItemID, itemID)
+	updated, correctedName := correctResponsesFunctionCallArgumentEventName(data)
+	itemID := responsesFunctionCallArgumentEventKey(updated)
+	toolName := responsesFunctionCallArgumentEventToolName(updated, namesByItemID, itemID)
 	if toolName == "" {
-		return data, false
+		return updated, correctedName
 	}
-	return s.toolCorrector.correctToolParametersAtPath(data, "arguments", toolName)
+	next, correctedArgs := s.toolCorrector.correctToolParametersAtPath(updated, "arguments", toolName)
+	return next, correctedName || correctedArgs
 }
 
 func shouldCorrectOpenAIPassthroughToolCalls(account *Account) bool {

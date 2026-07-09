@@ -34,6 +34,7 @@ Search/Discovery:
 
 Execution:
   • bash   - Run shell commands
+              Preserve shell command whitespace exactly; never concatenate command tokens or quoted words.
 
 Network:
   • webfetch - Fetch web content
