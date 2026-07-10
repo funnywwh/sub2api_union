@@ -29,11 +29,17 @@ jobs:
   # Update VERSION file with tag version
   update-version:
     runs-on: ubuntu-latest
+    outputs:
+      build_date: ${{ steps.build_date.outputs.value }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Set build date
+        id: build_date
+        run: echo "value=$(date -u '+%Y-%m-%d %H:%M:%S')" >> $GITHUB_OUTPUT
 
       - name: Update VERSION file
         run: |
@@ -54,6 +60,7 @@ jobs:
           retention-days: 1
 
   build-frontend:
+    needs: update-version
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -78,8 +85,10 @@ jobs:
         working-directory: frontend
 
       - name: Build frontend
-        run: pnpm run build
+        run: SUB2API_BUILD_TIME="${BUILD_DATE}" pnpm run build
         working-directory: frontend
+        env:
+          BUILD_DATE: ${{ needs.update-version.outputs.build_date }}
 
       - name: Upload frontend artifact
         uses: actions/upload-artifact@v7
@@ -188,6 +197,7 @@ jobs:
           GITHUB_REPO_OWNER_LOWER: ${{ steps.lowercase.outputs.owner }}
           GITHUB_REPO_NAME: ${{ github.event.repository.name }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME || 'skip' }}
+          BUILD_DATE: ${{ needs.update-version.outputs.build_date }}
 
       # Update DockerHub description
       - name: Update DockerHub description

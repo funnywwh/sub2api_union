@@ -6,9 +6,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 GIT_SHORT_HASH="$(git -C "${REPO_ROOT}" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+BUILD_DATE="$(date -u '+%Y-%m-%d %H:%M:%S')"
 
 BUILDX_GIT_INFO=false docker build -t sub2api:latest \
     --build-arg COMMIT="${GIT_SHORT_HASH}" \
+    --build-arg DATE="${BUILD_DATE}" \
     --build-arg GOPROXY=https://goproxy.cn,direct \
     --build-arg GOSUMDB=sum.golang.org \
     -f "${REPO_ROOT}/Dockerfile" \

@@ -28,7 +28,7 @@ builds:
     ldflags:
       - -s -w
       - -X main.Commit={{.Commit}}
-      - -X main.Date={{.Date}}
+      - -X 'main.Date={{if .Env.BUILD_DATE}}{{.Env.BUILD_DATE}}{{else}}{{.Date}}{{end}}'
       - -X main.BuildType=release
 
 archives:

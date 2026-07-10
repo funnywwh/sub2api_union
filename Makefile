@@ -2,6 +2,7 @@
 
 DOCKER_IMAGE ?= weishaw/sub2api:latest
 GIT_SHORT_HASH ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+BUILD_DATE ?= $(shell date -u '+%Y-%m-%d %H:%M:%S')
 DOCKER_ARCHIVE ?= sub2api-$(GIT_SHORT_HASH).tgz
 GOPROXY ?= https://goproxy.cn,direct
 GOSUMDB ?= sum.golang.org
@@ -40,6 +41,7 @@ docker-export:
 	@echo "构建 Docker 镜像: $(DOCKER_IMAGE)"
 	@BUILDX_GIT_INFO=false docker build -t $(DOCKER_IMAGE) $(DOCKER_BUILD_FLAGS) \
 		--build-arg COMMIT=$(GIT_SHORT_HASH) \
+		--build-arg DATE="$(BUILD_DATE)" \
 		--build-arg GOPROXY=$(GOPROXY) \
 		--build-arg GOSUMDB=$(GOSUMDB) \
 		.

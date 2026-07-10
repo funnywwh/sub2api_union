@@ -15,6 +15,7 @@ ARG GOSUMDB=sum.golang.org
 ARG NODE_OPTIONS=--max-old-space-size=4096
 ARG PNPM_VERSION=9.15.9
 ARG COMMIT=docker
+ARG DATE
 
 # -----------------------------------------------------------------------------
 # Stage 1: Frontend Builder
@@ -24,6 +25,7 @@ FROM ${NODE_IMAGE} AS frontend-builder
 ARG NODE_OPTIONS
 ARG PNPM_VERSION
 ARG COMMIT
+ARG DATE
 
 WORKDIR /app/frontend
 ENV NODE_OPTIONS=${NODE_OPTIONS}
@@ -39,7 +41,10 @@ RUN pnpm install --frozen-lockfile
 # Copy frontend source and build
 # Skip `vue-tsc -b` inside image builds to reduce peak memory usage.
 COPY frontend/ ./
-RUN SUB2API_BUILD_HASH="${COMMIT}" node replace-build-hash.mjs && pnpm exec vite build
+RUN BUILD_TIME="${DATE:-$(date -u '+%Y-%m-%d %H:%M:%S')}" && \
+    printf '%s\n' "${BUILD_TIME}" > /app/build-date && \
+    SUB2API_BUILD_HASH="${COMMIT}" SUB2API_BUILD_TIME="${BUILD_TIME}" node replace-build-hash.mjs && \
+    pnpm exec vite build
 
 # -----------------------------------------------------------------------------
 # Stage 2: Backend Builder
@@ -70,15 +75,16 @@ COPY backend/ ./
 
 # Copy frontend dist from previous stage (must be after backend copy to avoid being overwritten)
 COPY --from=frontend-builder /app/backend/internal/web/dist ./internal/web/dist
+COPY --from=frontend-builder /app/build-date /app/build-date
 
 # Build the binary (BuildType=release for CI builds, embed frontend)
 # Version precedence: build arg VERSION > cmd/server/VERSION
 RUN VERSION_VALUE="${VERSION}" && \
     if [ -z "${VERSION_VALUE}" ]; then VERSION_VALUE="$(tr -d '\r\n' < ./cmd/server/VERSION)"; fi && \
-    DATE_VALUE="${DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}" && \
+    DATE_VALUE="${DATE:-$(cat /app/build-date)}" && \
     CGO_ENABLED=0 GOOS=linux go build \
     -tags embed \
-    -ldflags="-s -w -X main.Version=${VERSION_VALUE} -X main.Commit=${COMMIT} -X main.Date=${DATE_VALUE} -X main.BuildType=release" \
+    -ldflags="-s -w -X 'main.Version=${VERSION_VALUE}' -X 'main.Commit=${COMMIT}' -X 'main.Date=${DATE_VALUE}' -X main.BuildType=release" \
     -trimpath \
     -o /app/sub2api \
     ./cmd/server
