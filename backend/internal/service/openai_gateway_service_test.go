@@ -1770,8 +1770,40 @@ func TestNormalizeOpenAICompactRequestBodyPreservesCodexCompactFields(t *testing
 }
 
 func TestNormalizeOpenAIPassthroughOAuthBody_CompactDerivesReasoningFromModelSuffix(t *testing.T) {
+	tests := []struct {
+		name      string
+		model     string
+		wantModel string
+		want      string
+	}{
+		{name: "xhigh", model: "gpt-5.4-xhigh", wantModel: "gpt-5.4", want: "xhigh"},
+		{name: "max", model: "gpt-5.6-sol-max", wantModel: "gpt-5.6-sol", want: "max"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := []byte(`{
+				"model":"` + tt.model + `",
+				"store":true,
+				"stream":true,
+				"instructions":"compact this conversation",
+				"input":[{"type":"message","role":"user","content":"hello"}]
+			}`)
+
+			normalized, changed, err := normalizeOpenAIPassthroughOAuthBody(body, true)
+			require.NoError(t, err)
+			require.True(t, changed)
+			require.Equal(t, tt.wantModel, gjson.GetBytes(normalized, "model").String())
+			require.Equal(t, tt.want, gjson.GetBytes(normalized, "reasoning.effort").String())
+			require.False(t, gjson.GetBytes(normalized, "store").Exists())
+			require.False(t, gjson.GetBytes(normalized, "stream").Exists())
+		})
+	}
+}
+
+func TestNormalizeOpenAIPassthroughOAuthBody_CompactDoesNotDeriveMaxForNonGPT56Model(t *testing.T) {
 	body := []byte(`{
-		"model":"gpt-5.4-xhigh",
+		"model":"gpt-5.1-codex-max",
 		"store":true,
 		"stream":true,
 		"instructions":"compact this conversation",
@@ -1781,8 +1813,8 @@ func TestNormalizeOpenAIPassthroughOAuthBody_CompactDerivesReasoningFromModelSuf
 	normalized, changed, err := normalizeOpenAIPassthroughOAuthBody(body, true)
 	require.NoError(t, err)
 	require.True(t, changed)
-	require.Equal(t, "gpt-5.4", gjson.GetBytes(normalized, "model").String())
-	require.Equal(t, "xhigh", gjson.GetBytes(normalized, "reasoning.effort").String())
+	require.Equal(t, "gpt-5.1-codex-max", gjson.GetBytes(normalized, "model").String())
+	require.False(t, gjson.GetBytes(normalized, "reasoning.effort").Exists())
 	require.False(t, gjson.GetBytes(normalized, "store").Exists())
 	require.False(t, gjson.GetBytes(normalized, "stream").Exists())
 }

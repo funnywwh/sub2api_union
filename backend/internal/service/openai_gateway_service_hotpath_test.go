@@ -73,6 +73,13 @@ func TestExtractOpenAIReasoningEffortFromBody(t *testing.T) {
 			wantValue: "xhigh",
 		},
 		{
+			name:      "显式 max effort",
+			body:      []byte(`{"reasoning":{"effort":"max"}}`),
+			model:     "gpt-5-high",
+			wantNil:   false,
+			wantValue: "max",
+		},
+		{
 			name:    "minimal 归一化为空",
 			body:    []byte(`{"reasoning":{"effort":"minimal"}}`),
 			model:   "gpt-5-high",
@@ -84,6 +91,19 @@ func TestExtractOpenAIReasoningEffortFromBody(t *testing.T) {
 			model:     "gpt-5-high",
 			wantNil:   false,
 			wantValue: "high",
+		},
+		{
+			name:      "从 GPT-5.6 max 后缀推导",
+			body:      []byte(`{"input":"hi"}`),
+			model:     "gpt-5.6-sol-max",
+			wantNil:   false,
+			wantValue: "max",
+		},
+		{
+			name:    "非 GPT-5.6 max 后缀不推导",
+			body:    []byte(`{"input":"hi"}`),
+			model:   "gpt-5.1-codex-max",
+			wantNil: true,
 		},
 		{
 			name:    "未知后缀不返回",

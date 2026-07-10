@@ -474,9 +474,9 @@ type TokenRefreshConfig struct {
 }
 
 type PricingConfig struct {
-	// 价格数据远程URL（默认使用LiteLLM镜像）
+	// 价格数据远程URL（运行时会被限制到代码内置可信源）
 	RemoteURL string `mapstructure:"remote_url"`
-	// 哈希校验文件URL
+	// 哈希校验文件URL（运行时会被限制到代码内置可信源）
 	HashURL string `mapstructure:"hash_url"`
 	// 本地数据目录
 	DataDir string `mapstructure:"data_dir"`
@@ -1412,6 +1412,7 @@ func setDefaults() {
 		"cloudcode-pa.googleapis.com",
 		"*.openai.azure.com",
 	})
+	// pricing_hosts 为旧配置兼容保留；计费价格源额外使用代码内置可信路径校验。
 	viper.SetDefault("security.url_allowlist.pricing_hosts", []string{
 		"raw.githubusercontent.com",
 	})
@@ -1557,7 +1558,7 @@ func setDefaults() {
 	viper.SetDefault("rate_limit.overload_cooldown_minutes", 10)
 	viper.SetDefault("rate_limit.oauth_401_cooldown_minutes", 10)
 
-	// Pricing - 从 model-price-repo 同步模型定价和上下文窗口数据（固定到 commit，避免分支漂移）
+	// Pricing - 从代码内置可信的 model-price-repo 路径同步模型定价和上下文窗口数据。
 	viper.SetDefault("pricing.remote_url", "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.json")
 	viper.SetDefault("pricing.hash_url", "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.sha256")
 	viper.SetDefault("pricing.data_dir", "./data")

@@ -26,6 +26,9 @@ func TestNormalizeOpenAICompatRequestedModel(t *testing.T) {
 		input string
 		want  string
 	}{
+		{name: "gpt 5.6 alias strips max", input: "gpt-5.6-max", want: "gpt-5.6-sol"},
+		{name: "gpt 5.6 sol strips max", input: "gpt-5.6-sol-max", want: "gpt-5.6-sol"},
+		{name: "gpt 5.6 reasoning alias strips xhigh", input: "gpt-5.6-terra-xhigh", want: "gpt-5.6-terra"},
 		{name: "gpt 5.5 reasoning alias strips xhigh", input: "gpt-5.5-xhigh", want: "gpt-5.5"},
 		{name: "gpt reasoning alias strips xhigh", input: "gpt-5.4-xhigh", want: "gpt-5.4"},
 		{name: "gpt reasoning alias strips none", input: "gpt-5.4-none", want: "gpt-5.4"},

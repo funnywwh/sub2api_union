@@ -5661,7 +5661,11 @@ func deriveOpenAIReasoningEffortFromModel(model string) string {
 		return ""
 	}
 
-	return normalizeOpenAIReasoningEffort(parts[len(parts)-1])
+	effort := normalizeOpenAIReasoningEffort(parts[len(parts)-1])
+	if effort == "max" && !isGPT56MaxReasoningAlias(modelID) {
+		return ""
+	}
+	return effort
 }
 
 func extractOpenAIRequestMetaFromBody(body []byte) (model string, stream bool, promptCacheKey string) {
@@ -5988,7 +5992,7 @@ func normalizeOpenAIReasoningEffort(raw string) string {
 	switch value {
 	case "none", "minimal":
 		return ""
-	case "low", "medium", "high":
+	case "low", "medium", "high", "max":
 		return value
 	case "xhigh", "extrahigh":
 		return "xhigh"

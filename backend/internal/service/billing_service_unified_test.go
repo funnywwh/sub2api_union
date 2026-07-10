@@ -60,6 +60,49 @@ func TestCalculateCostUnified_TokenMode(t *testing.T) {
 	require.Equal(t, string(BillingModeToken), cost.BillingMode)
 }
 
+func TestCalculateCostUnified_TokenIntervalsIncludeCacheCreationInContext(t *testing.T) {
+	bs := newTestBillingService()
+	resolver := NewModelPricingResolver(nil, bs)
+	resolved := &ResolvedPricing{
+		Mode: BillingModeToken,
+		BasePricing: &ModelPricing{
+			InputPricePerToken:         1e-6,
+			CacheCreationPricePerToken: 1e-6,
+		},
+		Intervals: []PricingInterval{
+			{
+				MinTokens:       0,
+				MaxTokens:       testPtrInt(272000),
+				InputPrice:      testPtrFloat64(1e-6),
+				CacheWritePrice: testPtrFloat64(1e-6),
+			},
+			{
+				MinTokens:       272000,
+				InputPrice:      testPtrFloat64(2e-6),
+				CacheWritePrice: testPtrFloat64(2e-6),
+			},
+		},
+	}
+
+	cost, err := bs.CalculateCostUnified(CostInput{
+		Ctx:            context.Background(),
+		Model:          "claude-sonnet-4",
+		Tokens:         UsageTokens{InputTokens: 200000, CacheCreationTokens: 80000},
+		RateMultiplier: 1.0,
+		Resolver:       resolver,
+		Resolved:       resolved,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, cost)
+
+	expectedInput := float64(200000) * 2e-6
+	expectedCacheCreation := float64(80000) * 2e-6
+	require.InDelta(t, expectedInput, cost.InputCost, 1e-10)
+	require.InDelta(t, expectedCacheCreation, cost.CacheCreationCost, 1e-10)
+	require.InDelta(t, expectedInput+expectedCacheCreation, cost.TotalCost, 1e-10)
+	require.Equal(t, string(BillingModeToken), cost.BillingMode)
+}
+
 func TestCalculateCostUnified_PerRequestMode(t *testing.T) {
 	// Set up a ChannelService with a per-request pricing channel
 	cs := newTestChannelServiceWithCache(t, &channelCache{
@@ -100,6 +143,41 @@ func TestCalculateCostUnified_PerRequestMode(t *testing.T) {
 	require.InDelta(t, 0.15, cost.TotalCost, 1e-10)
 	// ActualCost = 0.15 * 2.0 = 0.30
 	require.InDelta(t, 0.30, cost.ActualCost, 1e-10)
+	require.Equal(t, string(BillingModePerRequest), cost.BillingMode)
+}
+
+func TestCalculateCostUnified_PerRequestTiersIncludeCacheCreationInContext(t *testing.T) {
+	bs := newTestBillingService()
+	resolver := NewModelPricingResolver(nil, bs)
+	resolved := &ResolvedPricing{
+		Mode:                   BillingModePerRequest,
+		DefaultPerRequestPrice: 0.05,
+		RequestTiers: []PricingInterval{
+			{
+				MinTokens:       0,
+				MaxTokens:       testPtrInt(272000),
+				PerRequestPrice: testPtrFloat64(0.10),
+			},
+			{
+				MinTokens:       272000,
+				PerRequestPrice: testPtrFloat64(0.25),
+			},
+		},
+	}
+
+	cost, err := bs.CalculateCostUnified(CostInput{
+		Ctx:            context.Background(),
+		Model:          "claude-sonnet-4",
+		Tokens:         UsageTokens{InputTokens: 200000, CacheCreationTokens: 80000},
+		RequestCount:   1,
+		RateMultiplier: 1.0,
+		Resolver:       resolver,
+		Resolved:       resolved,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, cost)
+	require.InDelta(t, 0.25, cost.TotalCost, 1e-10)
+	require.InDelta(t, 0.25, cost.ActualCost, 1e-10)
 	require.Equal(t, string(BillingModePerRequest), cost.BillingMode)
 }
 

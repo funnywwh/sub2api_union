@@ -299,6 +299,31 @@ func TestResolve_WithChannelOverride_TokenNilBasePricing(t *testing.T) {
 	require.InDelta(t, 21e-6, resolved.BasePricing.OutputPricePerToken, 1e-12)
 }
 
+func TestApplyTokenOverrides_ClonesBasePricingBeforeFlatOverrides(t *testing.T) {
+	r := NewModelPricingResolver(&ChannelService{}, newTestBillingServiceForResolver())
+	basePricing := &ModelPricing{
+		InputPricePerToken:         3e-6,
+		OutputPricePerToken:        15e-6,
+		CacheCreationPricePerToken: 3.75e-6,
+		CacheReadPricePerToken:     0.3e-6,
+	}
+	resolved := &ResolvedPricing{
+		Mode:        BillingModeToken,
+		BasePricing: basePricing,
+	}
+
+	r.applyTokenOverrides(&ChannelModelPricing{
+		InputPrice:      testPtrFloat64(7e-6),
+		CacheWritePrice: testPtrFloat64(8e-6),
+	}, resolved)
+
+	require.NotSame(t, basePricing, resolved.BasePricing)
+	require.InDelta(t, 3e-6, basePricing.InputPricePerToken, 1e-12)
+	require.InDelta(t, 3.75e-6, basePricing.CacheCreationPricePerToken, 1e-12)
+	require.InDelta(t, 7e-6, resolved.BasePricing.InputPricePerToken, 1e-12)
+	require.InDelta(t, 8e-6, resolved.BasePricing.CacheCreationPricePerToken, 1e-12)
+}
+
 // ---------------------------------------------------------------------------
 // 2. Per-request mode overrides
 // ---------------------------------------------------------------------------

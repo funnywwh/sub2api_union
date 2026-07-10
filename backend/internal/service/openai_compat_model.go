@@ -84,6 +84,11 @@ func splitOpenAICompatReasoningModel(model string) (normalizedModel string, reas
 		reasoningEffort = last
 	case "xhigh", "extrahigh":
 		reasoningEffort = "xhigh"
+	case "max":
+		if !isGPT56MaxReasoningAlias(modelID) {
+			return trimmed, "", false
+		}
+		reasoningEffort = "max"
 	default:
 		return trimmed, "", false
 	}
@@ -91,11 +96,28 @@ func splitOpenAICompatReasoningModel(model string) (normalizedModel string, reas
 	return normalizeCodexModel(modelID), reasoningEffort, true
 }
 
+func isGPT56MaxReasoningAlias(modelID string) bool {
+	lower := strings.ToLower(strings.TrimSpace(modelID))
+	for _, suffix := range []string{"-max", "_max", " max"} {
+		base, ok := strings.CutSuffix(lower, suffix)
+		if !ok {
+			continue
+		}
+		switch normalizeCodexModel(base) {
+		case "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna":
+			return true
+		default:
+			return false
+		}
+	}
+	return false
+}
+
 func openAIReasoningEffortToClaudeOutputEffort(effort string) string {
 	switch strings.TrimSpace(effort) {
 	case "low", "medium", "high":
 		return effort
-	case "xhigh":
+	case "xhigh", "max":
 		return "max"
 	default:
 		return ""

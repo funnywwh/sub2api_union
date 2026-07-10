@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -20,6 +21,12 @@ import (
 	"go.uber.org/zap"
 )
 
+const (
+	trustedPricingHost     = "raw.githubusercontent.com"
+	trustedPricingDataPath = "/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.json"
+	trustedPricingHashPath = "/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.sha256"
+)
+
 var (
 	openAIModelDatePattern     = regexp.MustCompile(`-\d{8}$`)
 	openAIModelBasePattern     = regexp.MustCompile(`^(gpt-\d+(?:\.\d+)?)(?:-|$)`)
@@ -32,13 +39,61 @@ var (
 		Mode:                        "chat",
 		SupportsPromptCaching:       true,
 	}
+	openAIGPT56SolFallbackPricing = &LiteLLMModelPricing{
+		InputCostPerToken:                   5e-06,    // $5 per MTok
+		InputCostPerTokenPriority:           1e-05,    // $10 per MTok
+		OutputCostPerToken:                  3e-05,    // $30 per MTok
+		OutputCostPerTokenPriority:          6e-05,    // $60 per MTok
+		CacheCreationInputTokenCost:         6.25e-06, // $6.25 per MTok
+		CacheCreationInputTokenCostPriority: 1.25e-05, // $12.50 per MTok
+		CacheReadInputTokenCost:             5e-07,    // $0.50 per MTok
+		CacheReadInputTokenCostPriority:     1e-06,    // $1 per MTok
+		LongContextInputTokenThreshold:      openAIFlagshipLongContextInputThreshold,
+		LongContextInputCostMultiplier:      openAIFlagshipLongContextInputMultiplier,
+		LongContextOutputCostMultiplier:     openAIFlagshipLongContextOutputMultiplier,
+		LiteLLMProvider:                     "openai",
+		Mode:                                "chat",
+		SupportsPromptCaching:               true,
+	}
+	openAIGPT56TerraFallbackPricing = &LiteLLMModelPricing{
+		InputCostPerToken:                   2.5e-06,   // $2.50 per MTok
+		InputCostPerTokenPriority:           5e-06,     // $5 per MTok
+		OutputCostPerToken:                  1.5e-05,   // $15 per MTok
+		OutputCostPerTokenPriority:          3e-05,     // $30 per MTok
+		CacheCreationInputTokenCost:         3.125e-06, // $3.125 per MTok
+		CacheCreationInputTokenCostPriority: 6.25e-06,  // $6.25 per MTok
+		CacheReadInputTokenCost:             2.5e-07,   // $0.25 per MTok
+		CacheReadInputTokenCostPriority:     5e-07,     // $0.50 per MTok
+		LongContextInputTokenThreshold:      openAIFlagshipLongContextInputThreshold,
+		LongContextInputCostMultiplier:      openAIFlagshipLongContextInputMultiplier,
+		LongContextOutputCostMultiplier:     openAIFlagshipLongContextOutputMultiplier,
+		LiteLLMProvider:                     "openai",
+		Mode:                                "chat",
+		SupportsPromptCaching:               true,
+	}
+	openAIGPT56LunaFallbackPricing = &LiteLLMModelPricing{
+		InputCostPerToken:                   1e-06,    // $1 per MTok
+		InputCostPerTokenPriority:           2e-06,    // $2 per MTok
+		OutputCostPerToken:                  6e-06,    // $6 per MTok
+		OutputCostPerTokenPriority:          1.2e-05,  // $12 per MTok
+		CacheCreationInputTokenCost:         1.25e-06, // $1.25 per MTok
+		CacheCreationInputTokenCostPriority: 2.5e-06,  // $2.50 per MTok
+		CacheReadInputTokenCost:             1e-07,    // $0.10 per MTok
+		CacheReadInputTokenCostPriority:     2e-07,    // $0.20 per MTok
+		LongContextInputTokenThreshold:      openAIFlagshipLongContextInputThreshold,
+		LongContextInputCostMultiplier:      openAIFlagshipLongContextInputMultiplier,
+		LongContextOutputCostMultiplier:     openAIFlagshipLongContextOutputMultiplier,
+		LiteLLMProvider:                     "openai",
+		Mode:                                "chat",
+		SupportsPromptCaching:               true,
+	}
 	openAIGPT54FallbackPricing = &LiteLLMModelPricing{
 		InputCostPerToken:               2.5e-06, // $2.5 per MTok
 		OutputCostPerToken:              1.5e-05, // $15 per MTok
 		CacheReadInputTokenCost:         2.5e-07, // $0.25 per MTok
-		LongContextInputTokenThreshold:  272000,
-		LongContextInputCostMultiplier:  2.0,
-		LongContextOutputCostMultiplier: 1.5,
+		LongContextInputTokenThreshold:  openAIFlagshipLongContextInputThreshold,
+		LongContextInputCostMultiplier:  openAIFlagshipLongContextInputMultiplier,
+		LongContextOutputCostMultiplier: openAIFlagshipLongContextOutputMultiplier,
 		LiteLLMProvider:                 "openai",
 		Mode:                            "chat",
 		SupportsPromptCaching:           true,
@@ -64,23 +119,28 @@ var (
 // LiteLLMModelPricing LiteLLM价格数据结构
 // 只保留我们需要的字段，使用指针来处理可能缺失的值
 type LiteLLMModelPricing struct {
-	InputCostPerToken                   float64 `json:"input_cost_per_token"`
-	InputCostPerTokenPriority           float64 `json:"input_cost_per_token_priority"`
-	OutputCostPerToken                  float64 `json:"output_cost_per_token"`
-	OutputCostPerTokenPriority          float64 `json:"output_cost_per_token_priority"`
-	CacheCreationInputTokenCost         float64 `json:"cache_creation_input_token_cost"`
-	CacheCreationInputTokenCostAbove1hr float64 `json:"cache_creation_input_token_cost_above_1hr"`
-	CacheReadInputTokenCost             float64 `json:"cache_read_input_token_cost"`
-	CacheReadInputTokenCostPriority     float64 `json:"cache_read_input_token_cost_priority"`
-	LongContextInputTokenThreshold      int     `json:"long_context_input_token_threshold,omitempty"`
-	LongContextInputCostMultiplier      float64 `json:"long_context_input_cost_multiplier,omitempty"`
-	LongContextOutputCostMultiplier     float64 `json:"long_context_output_cost_multiplier,omitempty"`
-	SupportsServiceTier                 bool    `json:"supports_service_tier"`
-	LiteLLMProvider                     string  `json:"litellm_provider"`
-	Mode                                string  `json:"mode"`
-	SupportsPromptCaching               bool    `json:"supports_prompt_caching"`
-	OutputCostPerImage                  float64 `json:"output_cost_per_image"`       // 图片生成模型每张图片价格
-	OutputCostPerImageToken             float64 `json:"output_cost_per_image_token"` // 图片输出 token 价格
+	InputCostPerToken                    float64 `json:"input_cost_per_token"`
+	InputCostPerTokenPriority            float64 `json:"input_cost_per_token_priority"`
+	InputCostPerTokenAbove272k           float64 `json:"input_cost_per_token_above_272k_tokens"`
+	OutputCostPerToken                   float64 `json:"output_cost_per_token"`
+	OutputCostPerTokenPriority           float64 `json:"output_cost_per_token_priority"`
+	OutputCostPerTokenAbove272k          float64 `json:"output_cost_per_token_above_272k_tokens"`
+	CacheCreationInputTokenCost          float64 `json:"cache_creation_input_token_cost"`
+	CacheCreationInputTokenCostAbove1hr  float64 `json:"cache_creation_input_token_cost_above_1hr"`
+	CacheCreationInputTokenCostPriority  float64 `json:"cache_creation_input_token_cost_priority"`
+	CacheCreationInputTokenCostAbove272k float64 `json:"cache_creation_input_token_cost_above_272k_tokens"`
+	CacheReadInputTokenCost              float64 `json:"cache_read_input_token_cost"`
+	CacheReadInputTokenCostPriority      float64 `json:"cache_read_input_token_cost_priority"`
+	CacheReadInputTokenCostAbove272k     float64 `json:"cache_read_input_token_cost_above_272k_tokens"`
+	LongContextInputTokenThreshold       int     `json:"long_context_input_token_threshold,omitempty"`
+	LongContextInputCostMultiplier       float64 `json:"long_context_input_cost_multiplier,omitempty"`
+	LongContextOutputCostMultiplier      float64 `json:"long_context_output_cost_multiplier,omitempty"`
+	SupportsServiceTier                  bool    `json:"supports_service_tier"`
+	LiteLLMProvider                      string  `json:"litellm_provider"`
+	Mode                                 string  `json:"mode"`
+	SupportsPromptCaching                bool    `json:"supports_prompt_caching"`
+	OutputCostPerImage                   float64 `json:"output_cost_per_image"`       // 图片生成模型每张图片价格
+	OutputCostPerImageToken              float64 `json:"output_cost_per_image_token"` // 图片输出 token 价格
 }
 
 // PricingRemoteClient 远程价格数据获取接口
@@ -91,20 +151,25 @@ type PricingRemoteClient interface {
 
 // LiteLLMRawEntry 用于解析原始JSON数据
 type LiteLLMRawEntry struct {
-	InputCostPerToken                   *float64 `json:"input_cost_per_token"`
-	InputCostPerTokenPriority           *float64 `json:"input_cost_per_token_priority"`
-	OutputCostPerToken                  *float64 `json:"output_cost_per_token"`
-	OutputCostPerTokenPriority          *float64 `json:"output_cost_per_token_priority"`
-	CacheCreationInputTokenCost         *float64 `json:"cache_creation_input_token_cost"`
-	CacheCreationInputTokenCostAbove1hr *float64 `json:"cache_creation_input_token_cost_above_1hr"`
-	CacheReadInputTokenCost             *float64 `json:"cache_read_input_token_cost"`
-	CacheReadInputTokenCostPriority     *float64 `json:"cache_read_input_token_cost_priority"`
-	SupportsServiceTier                 bool     `json:"supports_service_tier"`
-	LiteLLMProvider                     string   `json:"litellm_provider"`
-	Mode                                string   `json:"mode"`
-	SupportsPromptCaching               bool     `json:"supports_prompt_caching"`
-	OutputCostPerImage                  *float64 `json:"output_cost_per_image"`
-	OutputCostPerImageToken             *float64 `json:"output_cost_per_image_token"`
+	InputCostPerToken                    *float64 `json:"input_cost_per_token"`
+	InputCostPerTokenPriority            *float64 `json:"input_cost_per_token_priority"`
+	InputCostPerTokenAbove272k           *float64 `json:"input_cost_per_token_above_272k_tokens"`
+	OutputCostPerToken                   *float64 `json:"output_cost_per_token"`
+	OutputCostPerTokenPriority           *float64 `json:"output_cost_per_token_priority"`
+	OutputCostPerTokenAbove272k          *float64 `json:"output_cost_per_token_above_272k_tokens"`
+	CacheCreationInputTokenCost          *float64 `json:"cache_creation_input_token_cost"`
+	CacheCreationInputTokenCostAbove1hr  *float64 `json:"cache_creation_input_token_cost_above_1hr"`
+	CacheCreationInputTokenCostPriority  *float64 `json:"cache_creation_input_token_cost_priority"`
+	CacheCreationInputTokenCostAbove272k *float64 `json:"cache_creation_input_token_cost_above_272k_tokens"`
+	CacheReadInputTokenCost              *float64 `json:"cache_read_input_token_cost"`
+	CacheReadInputTokenCostPriority      *float64 `json:"cache_read_input_token_cost_priority"`
+	CacheReadInputTokenCostAbove272k     *float64 `json:"cache_read_input_token_cost_above_272k_tokens"`
+	SupportsServiceTier                  bool     `json:"supports_service_tier"`
+	LiteLLMProvider                      string   `json:"litellm_provider"`
+	Mode                                 string   `json:"mode"`
+	SupportsPromptCaching                bool     `json:"supports_prompt_caching"`
+	OutputCostPerImage                   *float64 `json:"output_cost_per_image"`
+	OutputCostPerImageToken              *float64 `json:"output_cost_per_image_token"`
 }
 
 // PricingService 动态价格服务
@@ -398,11 +463,17 @@ func (s *PricingService) parsePricingData(body []byte) (map[string]*LiteLLMModel
 		if entry.InputCostPerTokenPriority != nil {
 			pricing.InputCostPerTokenPriority = *entry.InputCostPerTokenPriority
 		}
+		if entry.InputCostPerTokenAbove272k != nil {
+			pricing.InputCostPerTokenAbove272k = *entry.InputCostPerTokenAbove272k
+		}
 		if entry.OutputCostPerToken != nil {
 			pricing.OutputCostPerToken = *entry.OutputCostPerToken
 		}
 		if entry.OutputCostPerTokenPriority != nil {
 			pricing.OutputCostPerTokenPriority = *entry.OutputCostPerTokenPriority
+		}
+		if entry.OutputCostPerTokenAbove272k != nil {
+			pricing.OutputCostPerTokenAbove272k = *entry.OutputCostPerTokenAbove272k
 		}
 		if entry.CacheCreationInputTokenCost != nil {
 			pricing.CacheCreationInputTokenCost = *entry.CacheCreationInputTokenCost
@@ -410,11 +481,20 @@ func (s *PricingService) parsePricingData(body []byte) (map[string]*LiteLLMModel
 		if entry.CacheCreationInputTokenCostAbove1hr != nil {
 			pricing.CacheCreationInputTokenCostAbove1hr = *entry.CacheCreationInputTokenCostAbove1hr
 		}
+		if entry.CacheCreationInputTokenCostPriority != nil {
+			pricing.CacheCreationInputTokenCostPriority = *entry.CacheCreationInputTokenCostPriority
+		}
+		if entry.CacheCreationInputTokenCostAbove272k != nil {
+			pricing.CacheCreationInputTokenCostAbove272k = *entry.CacheCreationInputTokenCostAbove272k
+		}
 		if entry.CacheReadInputTokenCost != nil {
 			pricing.CacheReadInputTokenCost = *entry.CacheReadInputTokenCost
 		}
 		if entry.CacheReadInputTokenCostPriority != nil {
 			pricing.CacheReadInputTokenCostPriority = *entry.CacheReadInputTokenCostPriority
+		}
+		if entry.CacheReadInputTokenCostAbove272k != nil {
+			pricing.CacheReadInputTokenCostAbove272k = *entry.CacheReadInputTokenCostAbove272k
 		}
 		if entry.OutputCostPerImage != nil {
 			pricing.OutputCostPerImage = *entry.OutputCostPerImage
@@ -422,6 +502,7 @@ func (s *PricingService) parsePricingData(body []byte) (map[string]*LiteLLMModel
 		if entry.OutputCostPerImageToken != nil {
 			pricing.OutputCostPerImageToken = *entry.OutputCostPerImageToken
 		}
+		deriveLongContextPricingFromAbove272k(pricing)
 
 		result[modelName] = pricing
 	}
@@ -435,6 +516,50 @@ func (s *PricingService) parsePricingData(body []byte) (map[string]*LiteLLMModel
 	}
 
 	return result, nil
+}
+
+func deriveLongContextPricingFromAbove272k(pricing *LiteLLMModelPricing) {
+	if pricing == nil {
+		return
+	}
+	hasAbove272k := pricing.InputCostPerTokenAbove272k > 0 ||
+		pricing.OutputCostPerTokenAbove272k > 0 ||
+		pricing.CacheCreationInputTokenCostAbove272k > 0 ||
+		pricing.CacheReadInputTokenCostAbove272k > 0
+	if !hasAbove272k {
+		return
+	}
+	if pricing.LongContextInputTokenThreshold <= 0 {
+		pricing.LongContextInputTokenThreshold = openAIFlagshipLongContextInputThreshold
+	}
+	if pricing.LongContextInputCostMultiplier <= 0 {
+		for _, pair := range [][2]float64{
+			{pricing.InputCostPerTokenAbove272k, pricing.InputCostPerToken},
+			{pricing.CacheReadInputTokenCostAbove272k, pricing.CacheReadInputTokenCost},
+			{pricing.CacheCreationInputTokenCostAbove272k, pricing.CacheCreationInputTokenCost},
+		} {
+			if multiplier := priceRatio(pair[0], pair[1]); multiplier > 0 {
+				pricing.LongContextInputCostMultiplier = multiplier
+				break
+			}
+		}
+	}
+	if pricing.LongContextInputCostMultiplier <= 0 {
+		pricing.LongContextInputCostMultiplier = 1
+	}
+	if pricing.LongContextOutputCostMultiplier <= 0 {
+		pricing.LongContextOutputCostMultiplier = priceRatio(pricing.OutputCostPerTokenAbove272k, pricing.OutputCostPerToken)
+	}
+	if pricing.LongContextOutputCostMultiplier <= 0 {
+		pricing.LongContextOutputCostMultiplier = 1
+	}
+}
+
+func priceRatio(abovePrice, basePrice float64) float64 {
+	if abovePrice <= 0 || basePrice <= 0 {
+		return 0
+	}
+	return abovePrice / basePrice
 }
 
 // loadPricingData 从本地文件加载价格数据
@@ -512,22 +637,34 @@ func (s *PricingService) fetchRemoteHash() (string, error) {
 }
 
 func (s *PricingService) validatePricingURL(raw string) (string, error) {
-	if s.cfg != nil && !s.cfg.Security.URLAllowlist.Enabled {
-		normalized, err := urlvalidator.ValidateURLFormat(raw, s.cfg.Security.URLAllowlist.AllowInsecureHTTP)
-		if err != nil {
-			return "", fmt.Errorf("invalid pricing url: %w", err)
-		}
-		return normalized, nil
-	}
 	normalized, err := urlvalidator.ValidateHTTPSURL(raw, urlvalidator.ValidationOptions{
-		AllowedHosts:     s.cfg.Security.URLAllowlist.PricingHosts,
+		AllowedHosts:     []string{trustedPricingHost},
 		RequireAllowlist: true,
-		AllowPrivate:     s.cfg.Security.URLAllowlist.AllowPrivateHosts,
+		AllowPrivate:     false,
 	})
 	if err != nil {
 		return "", fmt.Errorf("invalid pricing url: %w", err)
 	}
+	parsed, err := url.Parse(normalized)
+	if err != nil {
+		return "", fmt.Errorf("invalid pricing url: %w", err)
+	}
+	if parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", fmt.Errorf("invalid pricing url: query and fragment are not allowed")
+	}
+	if !isTrustedPricingPath(parsed.EscapedPath()) {
+		return "", fmt.Errorf("invalid pricing url: untrusted path %s", parsed.EscapedPath())
+	}
 	return normalized, nil
+}
+
+func isTrustedPricingPath(path string) bool {
+	switch path {
+	case trustedPricingDataPath, trustedPricingHashPath:
+		return true
+	default:
+		return false
+	}
 }
 
 // GetModelPricing 获取模型价格（带模糊匹配）
@@ -775,9 +912,10 @@ func (s *PricingService) matchByModelFamily(model string) *LiteLLMModelPricing {
 // 2. gpt-5.2-codex -> gpt-5.2（去掉后缀如 -codex, -mini, -max 等）
 // 3. gpt-5.2-20251222 -> gpt-5.2（去掉日期版本号）
 // 4. gpt-5.3-codex -> gpt-5.2-codex
-// 5. gpt-5.5* -> 官方定价静态兜底
-// 6. gpt-5.4* -> 业务静态兜底价
-// 7. 最终回退到 DefaultTestModel (gpt-5.1-codex)
+// 5. gpt-5.6* -> 官方定价静态兜底
+// 6. gpt-5.5* -> 官方定价静态兜底
+// 7. gpt-5.4* -> 业务静态兜底价
+// 8. 最终回退到 DefaultTestModel (gpt-5.1-codex)
 func (s *PricingService) matchOpenAIModel(model string) *LiteLLMModelPricing {
 	if strings.HasPrefix(model, "gpt-5.3-codex-spark") {
 		if pricing, ok := s.pricingData["gpt-5.1-codex"]; ok {
@@ -786,6 +924,10 @@ func (s *PricingService) matchOpenAIModel(model string) *LiteLLMModelPricing {
 				Info(fmt.Sprintf("[Pricing] OpenAI fallback matched %s -> %s", model, "gpt-5.1-codex"))
 			return pricing
 		}
+	}
+
+	if pricing := s.matchOpenAIGPT56CanonicalModel(model); pricing != nil {
+		return pricing
 	}
 
 	// 尝试的回退变体
@@ -805,6 +947,30 @@ func (s *PricingService) matchOpenAIModel(model string) *LiteLLMModelPricing {
 				Info(fmt.Sprintf("[Pricing] OpenAI fallback matched %s -> %s", model, "gpt-5.2-codex"))
 			return pricing
 		}
+	}
+
+	if pricing, ok := s.pricingData[model]; ok {
+		logger.With(zap.String("component", "service.pricing")).
+			Info(fmt.Sprintf("[Pricing] OpenAI fallback matched %s -> %s", model, model))
+		return pricing
+	}
+
+	if strings.HasPrefix(model, "gpt-5.6-sol") {
+		logger.With(zap.String("component", "service.pricing")).
+			Info(fmt.Sprintf("[Pricing] OpenAI fallback matched %s -> %s", model, "gpt-5.6-sol(static)"))
+		return openAIGPT56SolFallbackPricing
+	}
+
+	if strings.HasPrefix(model, "gpt-5.6-terra") {
+		logger.With(zap.String("component", "service.pricing")).
+			Info(fmt.Sprintf("[Pricing] OpenAI fallback matched %s -> %s", model, "gpt-5.6-terra(static)"))
+		return openAIGPT56TerraFallbackPricing
+	}
+
+	if strings.HasPrefix(model, "gpt-5.6-luna") {
+		logger.With(zap.String("component", "service.pricing")).
+			Info(fmt.Sprintf("[Pricing] OpenAI fallback matched %s -> %s", model, "gpt-5.6-luna(static)"))
+		return openAIGPT56LunaFallbackPricing
 	}
 
 	if strings.HasPrefix(model, "gpt-5.5") {
@@ -846,6 +1012,30 @@ func (s *PricingService) matchOpenAIModel(model string) *LiteLLMModelPricing {
 	if pricing, ok := s.pricingData[defaultModel]; ok {
 		logger.LegacyPrintf("service.pricing", "[Pricing] OpenAI fallback to default model %s -> %s", model, defaultModel)
 		return pricing
+	}
+
+	return nil
+}
+
+func (s *PricingService) matchOpenAIGPT56CanonicalModel(model string) *LiteLLMModelPricing {
+	canonical := normalizeCodexModel(model)
+	switch canonical {
+	case "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna":
+	default:
+		return nil
+	}
+
+	candidates := []string{model}
+	if canonical != model {
+		candidates = append(candidates, canonical)
+	}
+
+	for _, candidate := range candidates {
+		if pricing, ok := s.pricingData[candidate]; ok {
+			logger.With(zap.String("component", "service.pricing")).
+				Info(fmt.Sprintf("[Pricing] OpenAI fallback matched %s -> %s", model, candidate))
+			return pricing
+		}
 	}
 
 	return nil

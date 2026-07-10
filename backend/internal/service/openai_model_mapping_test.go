@@ -86,6 +86,15 @@ func TestResolveOpenAIForwardModel(t *testing.T) {
 			expectedModel:      "gpt-5.5",
 		},
 		{
+			name: "preserves gpt-5.6 effort alias instead of group default",
+			account: &Account{
+				Credentials: map[string]any{},
+			},
+			requestedModel:     "gpt-5.6-sol-high",
+			defaultMappedModel: "gpt-5.4",
+			expectedModel:      "gpt-5.6-sol-high",
+		},
+		{
 			name: "preserves openai namespaced gpt-5.5 instead of group default",
 			account: &Account{
 				Credentials: map[string]any{},
