@@ -329,7 +329,7 @@ func (s *OpenAIGatewayService) ParseOpenAIAudioTranscriptionRequest(c *gin.Conte
 		return nil, err
 	}
 	if len(body) == 0 {
-		return nil, fmt.Errorf("Request body is empty")
+		return nil, fmt.Errorf("request body is empty")
 	}
 
 	parsed := &OpenAIAudioTranscriptionRequest{
@@ -445,7 +445,7 @@ func (s *OpenAIGatewayService) ForwardAudioTranscription(
 	var err error
 	if account.Type == AccountTypeOAuth {
 		if !supportsChatGPTAudioTranscription(requestModel, parsed.ResponseFormat) {
-			return nil, fmt.Errorf("Codex OAuth audio transcription does not support model %q with response_format %q", requestModel, parsed.ResponseFormat)
+			return nil, fmt.Errorf("codex OAuth audio transcription does not support model %q with response_format %q", requestModel, parsed.ResponseFormat)
 		}
 		// ChatGPT's Codex dictation endpoint accepts the audio file and optional
 		// language only. Keep the public OpenAI fields at this gateway boundary.
