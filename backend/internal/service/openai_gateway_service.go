@@ -5406,31 +5406,7 @@ func (s *OpenAIGatewayService) calculateOpenAIForcedPerRequestCost(
 	apiKey *APIKey,
 	multiplier float64,
 ) (*CostBreakdown, error) {
-	if s.billingService == nil || s.resolver == nil || apiKey == nil || apiKey.Group == nil {
-		return nil, fmt.Errorf("audio transcription requires positive per-request channel pricing for balance billing")
-	}
-	resolved := s.resolveOpenAIChannelPricing(ctx, billingModel, apiKey)
-	if resolved == nil || resolved.Mode != BillingModePerRequest {
-		return nil, fmt.Errorf("audio transcription requires positive per-request channel pricing for balance billing (model %q)", billingModel)
-	}
-
-	gid := apiKey.Group.ID
-	cost, err := s.billingService.CalculateCostUnified(CostInput{
-		Ctx:            ctx,
-		Model:          billingModel,
-		GroupID:        &gid,
-		RequestCount:   1,
-		RateMultiplier: multiplier,
-		Resolver:       s.resolver,
-		Resolved:       resolved,
-	})
-	if err != nil {
-		return nil, err
-	}
-	if cost == nil || cost.TotalCost <= 0 {
-		return nil, fmt.Errorf("audio transcription requires positive per-request channel pricing for balance billing (model %q)", billingModel)
-	}
-	return cost, nil
+	return s.calculatePositiveAudioTranscriptionPerRequestCost(ctx, billingModel, apiKey, multiplier)
 }
 
 func (s *OpenAIGatewayService) calculateOpenAIImageCost(

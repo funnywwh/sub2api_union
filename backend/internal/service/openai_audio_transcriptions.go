@@ -33,6 +33,11 @@ const (
 	openAIAudioMaxFieldSize   = 1 << 20
 	openAIAudioMaxFileSize    = 25 << 20
 	openAIAudioMaxRequestSize = 27 << 20
+
+	// ChatGPT's transcription endpoint does not return token usage. Match the
+	// image billing fallback behavior by charging a safe default when no
+	// positive channel per-request price is configured.
+	defaultAudioTranscriptionPerRequestPriceUSD = 0.2
 )
 
 type OpenAIAudioTranscriptionRequest struct {
@@ -277,29 +282,67 @@ func (s *OpenAIGatewayService) validatePositivePerRequestAudioTranscriptionPrici
 	upstreamModel string,
 ) error {
 	billingModel := resolveAudioTranscriptionBillingModel(requestedModel, channelMapping, upstreamModel)
+	_, err := s.calculatePositiveAudioTranscriptionPerRequestCost(ctx, billingModel, apiKey, 1)
+	return err
+}
+
+// calculatePositiveAudioTranscriptionPerRequestCost resolves and calculates
+// the channel's per-request price. A failed first lookup forces one database
+// refresh so admin pricing changes also take effect immediately in other
+// gateway processes whose local channel cache is still valid.
+func (s *OpenAIGatewayService) calculatePositiveAudioTranscriptionPerRequestCost(
+	ctx context.Context,
+	billingModel string,
+	apiKey *APIKey,
+	multiplier float64,
+) (*CostBreakdown, error) {
 	if apiKey == nil || apiKey.Group == nil || s.resolver == nil || s.billingService == nil {
-		return audioTranscriptionPerRequestBillingError(billingModel)
+		return nil, audioTranscriptionPerRequestBillingError(billingModel)
 	}
 
-	resolved := s.resolveOpenAIChannelPricing(ctx, billingModel, apiKey)
-	if resolved == nil || resolved.Mode != BillingModePerRequest {
-		return audioTranscriptionPerRequestBillingError(billingModel)
+	calculate := func() (*CostBreakdown, bool) {
+		resolved := s.resolveOpenAIChannelPricing(ctx, billingModel, apiKey)
+		if resolved == nil || resolved.Mode != BillingModePerRequest {
+			return nil, false
+		}
+
+		gid := apiKey.Group.ID
+		cost, err := s.billingService.CalculateCostUnified(CostInput{
+			Ctx:            ctx,
+			Model:          billingModel,
+			GroupID:        &gid,
+			RequestCount:   1,
+			RateMultiplier: multiplier,
+			Resolver:       s.resolver,
+			Resolved:       resolved,
+		})
+		return cost, err == nil && cost != nil && cost.TotalCost > 0
 	}
 
-	gid := apiKey.Group.ID
-	cost, err := s.billingService.CalculateCostUnified(CostInput{
-		Ctx:            ctx,
-		Model:          billingModel,
-		GroupID:        &gid,
-		RequestCount:   1,
-		RateMultiplier: 1,
-		Resolver:       s.resolver,
-		Resolved:       resolved,
-	})
-	if err != nil || cost == nil || cost.TotalCost <= 0 {
-		return audioTranscriptionPerRequestBillingError(billingModel)
+	if cost, ok := calculate(); ok {
+		return cost, nil
 	}
-	return nil
+
+	if s.channelService != nil {
+		if err := s.channelService.forceRefreshCache(ctx); err == nil {
+			if cost, ok := calculate(); ok {
+				return cost, nil
+			}
+		}
+	}
+
+	return defaultAudioTranscriptionPerRequestCost(multiplier), nil
+}
+
+func defaultAudioTranscriptionPerRequestCost(multiplier float64) *CostBreakdown {
+	if multiplier < 0 {
+		multiplier = 0
+	}
+	return &CostBreakdown{
+		TotalCost:   defaultAudioTranscriptionPerRequestPriceUSD,
+		ActualCost:  defaultAudioTranscriptionPerRequestPriceUSD * multiplier,
+		BillingMode: string(BillingModePerRequest),
+	}
 }
 
 func (s *OpenAIGatewayService) ParseOpenAIAudioTranscriptionRequest(c *gin.Context) (*OpenAIAudioTranscriptionRequest, error) {

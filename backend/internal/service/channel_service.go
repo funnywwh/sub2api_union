@@ -133,9 +133,10 @@ func (r ChannelMappingResult) ToUsageFields(reqModel, upstreamModel string) Chan
 }
 
 const (
-	channelCacheTTL       = 10 * time.Minute
-	channelErrorTTL       = 5 * time.Second // DB 错误时的短缓存
-	channelCacheDBTimeout = 10 * time.Second
+	channelCacheTTL                = 10 * time.Minute
+	channelErrorTTL                = 5 * time.Second // DB 错误时的短缓存
+	channelCacheDBTimeout          = 10 * time.Second
+	channelForceRefreshMinInterval = 5 * time.Second
 )
 
 // ChannelService 渠道管理服务
@@ -145,8 +146,9 @@ type ChannelService struct {
 	authCacheInvalidator APIKeyAuthCacheInvalidator
 	pricingService       *PricingService // 用于「可用渠道」展示时回落到全局定价；可为 nil（测试场景）
 
-	cache   atomic.Value // *channelCache
-	cacheSF singleflight.Group
+	cache            atomic.Value // *channelCache
+	cacheSF          singleflight.Group
+	lastForceRefresh atomic.Int64
 }
 
 // NewChannelService 创建渠道服务实例。
@@ -187,6 +189,30 @@ func (s *ChannelService) loadCache(ctx context.Context) (*channelCache, error) {
 		return nil, fmt.Errorf("unexpected cache type")
 	}
 	return cache, nil
+}
+
+// forceRefreshCache bypasses a still-valid local snapshot and rebuilds it from
+// the database. It shares the normal cache singleflight key so a cache miss and
+// an explicit refresh cannot rebuild the same process cache concurrently.
+func (s *ChannelService) forceRefreshCache(ctx context.Context) error {
+	if s == nil || s.repo == nil {
+		return fmt.Errorf("channel repository is not configured")
+	}
+	if last := s.lastForceRefresh.Load(); last > 0 && time.Since(time.Unix(0, last)) < channelForceRefreshMinInterval {
+		return nil
+	}
+
+	result, err, _ := s.cacheSF.Do("channel_cache", func() (any, error) {
+		return s.buildCache(ctx)
+	})
+	s.lastForceRefresh.Store(time.Now().UnixNano())
+	if err != nil {
+		return err
+	}
+	if _, ok := result.(*channelCache); !ok {
+		return fmt.Errorf("unexpected cache type")
+	}
+	return nil
 }
 
 // newEmptyChannelCache 创建空的渠道缓存（所有 map 已初始化）

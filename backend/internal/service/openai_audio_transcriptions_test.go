@@ -69,6 +69,39 @@ func newOpenAIAudioTranscriptionPricingResolver(t *testing.T, pricing []ChannelM
 	return NewModelPricingResolver(channelService, billingService)
 }
 
+type audioTranscriptionChannelRepository struct {
+	ChannelRepository
+	channels         []Channel
+	groupPlatforms   map[int64]string
+	listAllCallCount int
+}
+
+func (r *audioTranscriptionChannelRepository) ListAll(context.Context) ([]Channel, error) {
+	r.listAllCallCount++
+	return append([]Channel(nil), r.channels...), nil
+}
+
+func (r *audioTranscriptionChannelRepository) GetGroupPlatforms(context.Context, []int64) (map[int64]string, error) {
+	return r.groupPlatforms, nil
+}
+
+func newOpenAIAudioTranscriptionChannel(pricing []ChannelModelPricing) Channel {
+	return Channel{
+		ID:                 1,
+		Status:             StatusActive,
+		BillingModelSource: BillingModelSourceChannelMapped,
+		GroupIDs:           []int64{100},
+		ModelPricing:       pricing,
+	}
+}
+
+func storeOpenAIAudioTranscriptionChannelCache(channelService *ChannelService, channel Channel) {
+	channelService.cache.Store(populateChannelCache(
+		[]Channel{channel},
+		map[int64]string{100: PlatformOpenAI},
+	))
+}
+
 func TestParseOpenAIAudioTranscriptionRequest(t *testing.T) {
 	body, contentType := buildOpenAIAudioTranscriptionTestBody(t, map[string]string{
 		"model":           "gpt-4o-mini-transcribe",
@@ -634,7 +667,7 @@ func TestForwardAudioTranscriptionOAuthRejectsUnsupportedFormat(t *testing.T) {
 	require.ErrorContains(t, err, "does not support")
 }
 
-func TestValidateOAuthAudioTranscriptionBillingRejectsTokenPricing(t *testing.T) {
+func TestValidateOAuthAudioTranscriptionBillingUsesDefaultForTokenPricing(t *testing.T) {
 	inputPrice := 1e-6
 	resolver := newOpenAIAudioTranscriptionPricingResolver(t, []ChannelModelPricing{{
 		Platform:    PlatformOpenAI,
@@ -646,14 +679,26 @@ func TestValidateOAuthAudioTranscriptionBillingRejectsTokenPricing(t *testing.T)
 	groupID := int64(100)
 	apiKey := &APIKey{GroupID: &groupID, Group: &Group{ID: groupID}}
 
-	err := svc.ValidateOAuthAudioTranscriptionBilling(
+	require.NoError(t, svc.ValidateOAuthAudioTranscriptionBilling(
 		context.Background(),
 		apiKey,
 		nil,
 		"gpt-4o-mini-transcribe",
 		ChannelMappingResult{MappedModel: "gpt-4o-mini-transcribe"},
+	))
+	cost, err := svc.calculateOpenAIRecordUsageCost(
+		context.Background(),
+		&OpenAIForwardResult{ForcePerRequestBilling: true},
+		apiKey,
+		"gpt-4o-mini-transcribe",
+		1,
+		UsageTokens{},
+		"",
 	)
-	require.ErrorContains(t, err, "per-request channel pricing")
+	require.NoError(t, err)
+	require.Equal(t, string(BillingModePerRequest), cost.BillingMode)
+	require.InDelta(t, defaultAudioTranscriptionPerRequestPriceUSD, cost.TotalCost, 1e-12)
+	require.InDelta(t, defaultAudioTranscriptionPerRequestPriceUSD, cost.ActualCost, 1e-12)
 }
 
 func TestValidateOAuthAudioTranscriptionBillingAcceptsPositivePerRequestPricing(t *testing.T) {
@@ -691,8 +736,140 @@ func TestValidateOAuthAudioTranscriptionBillingAcceptsPositivePerRequestPricing(
 	require.InDelta(t, price, cost.ActualCost, 1e-12)
 }
 
-func TestValidateAudioTranscriptionBillingRejectsSubscriptionWithoutPerRequestPricing(t *testing.T) {
-	svc := &OpenAIGatewayService{}
+func TestValidateOAuthAudioTranscriptionBillingRefreshesStaleChannelPricing(t *testing.T) {
+	inputPrice := 1e-6
+	price := 0.35
+	repo := &audioTranscriptionChannelRepository{
+		channels: []Channel{newOpenAIAudioTranscriptionChannel([]ChannelModelPricing{{
+			Platform:        PlatformOpenAI,
+			Models:          []string{"gpt-4o-mini-transcribe"},
+			BillingMode:     BillingModePerRequest,
+			PerRequestPrice: &price,
+		}})},
+		groupPlatforms: map[int64]string{100: PlatformOpenAI},
+	}
+	channelService := NewChannelService(repo, nil, nil, nil)
+	storeOpenAIAudioTranscriptionChannelCache(channelService, newOpenAIAudioTranscriptionChannel([]ChannelModelPricing{{
+		Platform:    PlatformOpenAI,
+		Models:      []string{"gpt-4o-mini-transcribe"},
+		BillingMode: BillingModeToken,
+		InputPrice:  &inputPrice,
+	}}))
+	billingService := NewBillingService(&config.Config{}, nil)
+	resolver := NewModelPricingResolver(channelService, billingService)
+	svc := &OpenAIGatewayService{
+		resolver:       resolver,
+		billingService: billingService,
+		channelService: channelService,
+	}
+	groupID := int64(100)
+	apiKey := &APIKey{GroupID: &groupID, Group: &Group{ID: groupID}}
+	mapping := ChannelMappingResult{
+		MappedModel:        "gpt-4o-mini-transcribe",
+		Mapped:             true,
+		BillingModelSource: BillingModelSourceChannelMapped,
+	}
+
+	require.NoError(t, svc.ValidateOAuthAudioTranscriptionBilling(
+		context.Background(), apiKey, nil, "audio-transcribe-alias", mapping,
+	))
+	require.Equal(t, 1, repo.listAllCallCount)
+
+	cost, err := svc.calculateOpenAIRecordUsageCost(
+		context.Background(),
+		&OpenAIForwardResult{ForcePerRequestBilling: true},
+		apiKey,
+		"gpt-4o-mini-transcribe",
+		1,
+		UsageTokens{},
+		"",
+	)
+	require.NoError(t, err)
+	require.Equal(t, 1, repo.listAllCallCount)
+	require.Equal(t, string(BillingModePerRequest), cost.BillingMode)
+	require.InDelta(t, price, cost.TotalCost, 1e-12)
+	require.InDelta(t, price, cost.ActualCost, 1e-12)
+}
+
+func TestValidateOAuthAudioTranscriptionBillingUsesDefaultAfterRefreshMiss(t *testing.T) {
+	repo := &audioTranscriptionChannelRepository{
+		channels:       []Channel{newOpenAIAudioTranscriptionChannel(nil)},
+		groupPlatforms: map[int64]string{100: PlatformOpenAI},
+	}
+	channelService := NewChannelService(repo, nil, nil, nil)
+	storeOpenAIAudioTranscriptionChannelCache(channelService, newOpenAIAudioTranscriptionChannel(nil))
+	billingService := NewBillingService(&config.Config{}, nil)
+	resolver := NewModelPricingResolver(channelService, billingService)
+	svc := &OpenAIGatewayService{
+		resolver:       resolver,
+		billingService: billingService,
+		channelService: channelService,
+	}
+	groupID := int64(100)
+	apiKey := &APIKey{GroupID: &groupID, Group: &Group{ID: groupID}}
+
+	require.NoError(t, svc.ValidateOAuthAudioTranscriptionBilling(
+		context.Background(),
+		apiKey,
+		nil,
+		"gpt-4o-mini-transcribe",
+		ChannelMappingResult{MappedModel: "gpt-4o-mini-transcribe"},
+	))
+	require.Equal(t, 1, repo.listAllCallCount)
+
+	cost, err := svc.calculateOpenAIRecordUsageCost(
+		context.Background(),
+		&OpenAIForwardResult{ForcePerRequestBilling: true},
+		apiKey,
+		"gpt-4o-mini-transcribe",
+		1,
+		UsageTokens{},
+		"",
+	)
+	require.NoError(t, err)
+	require.Equal(t, 1, repo.listAllCallCount)
+	require.Equal(t, string(BillingModePerRequest), cost.BillingMode)
+	require.InDelta(t, defaultAudioTranscriptionPerRequestPriceUSD, cost.TotalCost, 1e-12)
+	require.InDelta(t, defaultAudioTranscriptionPerRequestPriceUSD, cost.ActualCost, 1e-12)
+}
+
+func TestValidateOAuthAudioTranscriptionBillingDoesNotRefreshValidPricing(t *testing.T) {
+	price := 0.2
+	channel := newOpenAIAudioTranscriptionChannel([]ChannelModelPricing{{
+		Platform:        PlatformOpenAI,
+		Models:          []string{"gpt-4o-mini-transcribe"},
+		BillingMode:     BillingModePerRequest,
+		PerRequestPrice: &price,
+	}})
+	repo := &audioTranscriptionChannelRepository{
+		channels:       []Channel{channel},
+		groupPlatforms: map[int64]string{100: PlatformOpenAI},
+	}
+	channelService := NewChannelService(repo, nil, nil, nil)
+	storeOpenAIAudioTranscriptionChannelCache(channelService, channel)
+	billingService := NewBillingService(&config.Config{}, nil)
+	resolver := NewModelPricingResolver(channelService, billingService)
+	svc := &OpenAIGatewayService{
+		resolver:       resolver,
+		billingService: billingService,
+		channelService: channelService,
+	}
+	groupID := int64(100)
+	apiKey := &APIKey{GroupID: &groupID, Group: &Group{ID: groupID}}
+
+	require.NoError(t, svc.ValidateOAuthAudioTranscriptionBilling(
+		context.Background(),
+		apiKey,
+		nil,
+		"gpt-4o-mini-transcribe",
+		ChannelMappingResult{MappedModel: "gpt-4o-mini-transcribe"},
+	))
+	require.Zero(t, repo.listAllCallCount)
+}
+
+func TestValidateAudioTranscriptionBillingUsesDefaultForSubscriptionWithoutChannelPricing(t *testing.T) {
+	resolver := newOpenAIAudioTranscriptionPricingResolver(t, nil)
+	svc := &OpenAIGatewayService{resolver: resolver, billingService: resolver.billingService}
 	groupID := int64(100)
 	apiKey := &APIKey{
 		GroupID: &groupID,
@@ -703,7 +880,7 @@ func TestValidateAudioTranscriptionBillingRejectsSubscriptionWithoutPerRequestPr
 	}
 	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth}
 
-	err := svc.ValidateAudioTranscriptionBilling(
+	require.NoError(t, svc.ValidateAudioTranscriptionBilling(
 		context.Background(),
 		apiKey,
 		&UserSubscription{},
@@ -711,8 +888,7 @@ func TestValidateAudioTranscriptionBillingRejectsSubscriptionWithoutPerRequestPr
 		"gpt-4o-mini-transcribe",
 		ChannelMappingResult{MappedModel: "gpt-4o-mini-transcribe"},
 		"json",
-	)
-	require.ErrorContains(t, err, "per-request channel pricing")
+	))
 }
 
 func TestValidateAudioTranscriptionBillingAcceptsSubscriptionWithPositivePerRequestPricing(t *testing.T) {
@@ -745,13 +921,14 @@ func TestValidateAudioTranscriptionBillingAcceptsSubscriptionWithPositivePerRequ
 	))
 }
 
-func TestValidateAudioTranscriptionBillingRejectsAPIKeyTextFormatWithoutPerRequestPricing(t *testing.T) {
-	svc := &OpenAIGatewayService{}
+func TestValidateAudioTranscriptionBillingUsesDefaultForAPIKeyTextFormatWithoutChannelPricing(t *testing.T) {
+	resolver := newOpenAIAudioTranscriptionPricingResolver(t, nil)
+	svc := &OpenAIGatewayService{resolver: resolver, billingService: resolver.billingService}
 	groupID := int64(100)
 	apiKey := &APIKey{GroupID: &groupID, Group: &Group{ID: groupID}}
 	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
 
-	err := svc.ValidateAudioTranscriptionBilling(
+	require.NoError(t, svc.ValidateAudioTranscriptionBilling(
 		context.Background(),
 		apiKey,
 		nil,
@@ -759,8 +936,7 @@ func TestValidateAudioTranscriptionBillingRejectsAPIKeyTextFormatWithoutPerReque
 		"gpt-4o-transcribe",
 		ChannelMappingResult{MappedModel: "gpt-4o-transcribe"},
 		"srt",
-	)
-	require.ErrorContains(t, err, "per-request channel pricing")
+	))
 }
 
 func TestValidateAudioTranscriptionBillingAllowsAPIKeyJSONUsageModelWithTokenPricing(t *testing.T) {
