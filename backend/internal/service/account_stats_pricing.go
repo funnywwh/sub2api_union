@@ -65,7 +65,20 @@ func tryModelFilePricing(billingService *BillingService, model string, tokens Us
 	if err != nil || pricing == nil {
 		return nil
 	}
-	cost := float64(tokens.InputTokens)*pricing.InputPricePerToken +
+	audioInputTokens := tokens.AudioInputTokens
+	if audioInputTokens < 0 {
+		audioInputTokens = 0
+	}
+	if audioInputTokens > tokens.InputTokens {
+		audioInputTokens = tokens.InputTokens
+	}
+	textInputTokens := tokens.InputTokens - audioInputTokens
+	audioInputPrice := pricing.AudioInputPricePerToken
+	if audioInputPrice == 0 {
+		audioInputPrice = pricing.InputPricePerToken
+	}
+	cost := float64(textInputTokens)*pricing.InputPricePerToken +
+		float64(audioInputTokens)*audioInputPrice +
 		float64(tokens.OutputTokens)*pricing.OutputPricePerToken +
 		float64(tokens.CacheCreationTokens)*pricing.CacheCreationPricePerToken +
 		float64(tokens.CacheReadTokens)*pricing.CacheReadPricePerToken +

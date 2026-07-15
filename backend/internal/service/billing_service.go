@@ -44,6 +44,8 @@ type BillingCache interface {
 // ModelPricing 模型价格配置（per-token价格，与LiteLLM格式一致）
 type ModelPricing struct {
 	InputPricePerToken                 float64 // 每token输入价格 (USD)
+	AudioInputPricePerToken            float64 // 每个音频输入 token 的价格 (USD)
+	AudioInputPricePerTokenPriority    float64 // priority service tier 下每个音频输入 token 的价格 (USD)
 	InputPricePerTokenPriority         float64 // priority service tier 下每token输入价格 (USD)
 	OutputPricePerToken                float64 // 每token输出价格 (USD)
 	OutputPricePerTokenPriority        float64 // priority service tier 下每token输出价格 (USD)
@@ -83,6 +85,7 @@ func usePriorityServiceTierPricing(serviceTier string, pricing *ModelPricing) bo
 		return false
 	}
 	return pricing.InputPricePerTokenPriority > 0 ||
+		pricing.AudioInputPricePerTokenPriority > 0 ||
 		pricing.OutputPricePerTokenPriority > 0 ||
 		pricing.CacheCreationPricePerTokenPriority > 0 ||
 		pricing.CacheReadPricePerTokenPriority > 0
@@ -102,6 +105,7 @@ func serviceTierCostMultiplier(serviceTier string) float64 {
 // UsageTokens 使用的token数量
 type UsageTokens struct {
 	InputTokens           int
+	AudioInputTokens      int
 	OutputTokens          int
 	CacheCreationTokens   int
 	CacheReadTokens       int
@@ -400,6 +404,8 @@ func (s *BillingService) GetModelPricing(model string) (*ModelPricing, error) {
 			enableBreakdown := price1h > 0 && price1h > price5m
 			return s.applyModelSpecificPricingPolicy(model, &ModelPricing{
 				InputPricePerToken:                 litellmPricing.InputCostPerToken,
+				AudioInputPricePerToken:            litellmPricing.InputCostPerAudioToken,
+				AudioInputPricePerTokenPriority:    litellmPricing.InputCostPerAudioTokenPriority,
 				InputPricePerTokenPriority:         litellmPricing.InputCostPerTokenPriority,
 				OutputPricePerToken:                litellmPricing.OutputCostPerToken,
 				OutputPricePerTokenPriority:        litellmPricing.OutputCostPerTokenPriority,
@@ -548,6 +554,7 @@ func (s *BillingService) computeTokenBreakdown(
 	}
 
 	inputPrice := pricing.InputPricePerToken
+	audioInputPrice := pricing.AudioInputPricePerToken
 	outputPrice := pricing.OutputPricePerToken
 	cacheReadPrice := pricing.CacheReadPricePerToken
 	tierMultiplier := 1.0
@@ -560,6 +567,11 @@ func (s *BillingService) computeTokenBreakdown(
 			inputPrice = pricing.InputPricePerTokenPriority
 		} else {
 			inputPrice *= priorityTierMultiplier
+		}
+		if pricing.AudioInputPricePerTokenPriority > 0 {
+			audioInputPrice = pricing.AudioInputPricePerTokenPriority
+		} else if audioInputPrice > 0 {
+			audioInputPrice *= priorityTierMultiplier
 		}
 		if pricing.OutputPricePerTokenPriority > 0 {
 			outputPrice = pricing.OutputPricePerTokenPriority
@@ -595,7 +607,18 @@ func (s *BillingService) computeTokenBreakdown(
 	}
 
 	bd := &CostBreakdown{}
-	bd.InputCost = float64(tokens.InputTokens) * inputPrice
+	audioInputTokens := tokens.AudioInputTokens
+	if audioInputTokens < 0 {
+		audioInputTokens = 0
+	}
+	if audioInputTokens > tokens.InputTokens {
+		audioInputTokens = tokens.InputTokens
+	}
+	textInputTokens := tokens.InputTokens - audioInputTokens
+	if audioInputPrice == 0 {
+		audioInputPrice = inputPrice
+	}
+	bd.InputCost = float64(textInputTokens)*inputPrice + float64(audioInputTokens)*audioInputPrice
 
 	// 分离图片输出 token 与文本输出 token
 	textOutputTokens := tokens.OutputTokens - tokens.ImageOutputTokens

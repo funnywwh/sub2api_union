@@ -798,6 +798,8 @@ func TestGetModelPricing_MapsDynamicPriorityFieldsIntoBillingPricing(t *testing.
 		pricingData: map[string]*LiteLLMModelPricing{
 			"dynamic-tier-model": {
 				InputCostPerToken:                   1e-6,
+				InputCostPerAudioToken:              1.5e-6,
+				InputCostPerAudioTokenPriority:      2.5e-6,
 				InputCostPerTokenPriority:           2e-6,
 				OutputCostPerToken:                  3e-6,
 				OutputCostPerTokenPriority:          6e-6,
@@ -816,6 +818,8 @@ func TestGetModelPricing_MapsDynamicPriorityFieldsIntoBillingPricing(t *testing.
 	pricing, err := svc.GetModelPricing("dynamic-tier-model")
 	require.NoError(t, err)
 	require.InDelta(t, 1e-6, pricing.InputPricePerToken, 1e-12)
+	require.InDelta(t, 1.5e-6, pricing.AudioInputPricePerToken, 1e-12)
+	require.InDelta(t, 2.5e-6, pricing.AudioInputPricePerTokenPriority, 1e-12)
 	require.InDelta(t, 2e-6, pricing.InputPricePerTokenPriority, 1e-12)
 	require.InDelta(t, 3e-6, pricing.OutputPricePerToken, 1e-12)
 	require.InDelta(t, 6e-6, pricing.OutputPricePerTokenPriority, 1e-12)

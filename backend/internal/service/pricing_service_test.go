@@ -13,6 +13,8 @@ func TestParsePricingData_ParsesPriorityAndServiceTierFields(t *testing.T) {
 	body := []byte(`{
 		"gpt-5.4": {
 			"input_cost_per_token": 0.0000025,
+			"input_cost_per_audio_token": 0.000006,
+			"input_cost_per_audio_token_priority": 0.000012,
 			"input_cost_per_token_priority": 0.000005,
 			"output_cost_per_token": 0.000015,
 			"output_cost_per_token_priority": 0.00003,
@@ -30,6 +32,8 @@ func TestParsePricingData_ParsesPriorityAndServiceTierFields(t *testing.T) {
 	require.NoError(t, err)
 	pricing := data["gpt-5.4"]
 	require.NotNil(t, pricing)
+	require.InDelta(t, 6e-6, pricing.InputCostPerAudioToken, 1e-12)
+	require.InDelta(t, 12e-6, pricing.InputCostPerAudioTokenPriority, 1e-12)
 	require.InDelta(t, 5e-6, pricing.InputCostPerTokenPriority, 1e-12)
 	require.InDelta(t, 3e-5, pricing.OutputCostPerTokenPriority, 1e-12)
 	require.InDelta(t, 5e-7, pricing.CacheReadInputTokenCostPriority, 1e-12)

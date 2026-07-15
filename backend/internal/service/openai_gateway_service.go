@@ -203,6 +203,7 @@ func (s *OpenAICodexUsageSnapshot) Normalize() *NormalizedCodexLimits {
 // OpenAIUsage represents OpenAI API response usage
 type OpenAIUsage struct {
 	InputTokens              int `json:"input_tokens"`
+	AudioInputTokens         int `json:"audio_input_tokens,omitempty"`
 	OutputTokens             int `json:"output_tokens"`
 	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
 	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
@@ -235,6 +236,12 @@ type OpenAIForwardResult struct {
 	FirstTokenMs    *int
 	ImageCount      int
 	ImageSize       string
+	// ForceUsageRecord keeps request-based endpoints visible even when the
+	// upstream does not return token usage (for example ChatGPT transcription).
+	ForceUsageRecord bool
+	// ForcePerRequestBilling requires a positive per-request channel price instead
+	// of falling back to zero-token token billing.
+	ForcePerRequestBilling bool
 }
 
 type OpenAIWSRetryMetricsSnapshot struct {
@@ -4565,13 +4572,20 @@ func extractOpenAIUsageFromJSONBytes(body []byte) (OpenAIUsage, bool) {
 		"usage.input_tokens_details.cached_tokens",
 		"usage.cache_read_input_tokens",
 		"usage.output_tokens_details.image_tokens",
+		"usage.input_token_details.audio_tokens",
+		"usage.input_tokens_details.audio_tokens",
 	)
 	cacheReadTokens := int(values[3].Int())
 	if cacheReadTokens == 0 {
 		cacheReadTokens = int(values[4].Int())
 	}
+	audioInputTokens := int(values[6].Int())
+	if audioInputTokens == 0 {
+		audioInputTokens = int(values[7].Int())
+	}
 	return OpenAIUsage{
 		InputTokens:              int(values[0].Int()),
+		AudioInputTokens:         audioInputTokens,
 		OutputTokens:             int(values[1].Int()),
 		CacheCreationInputTokens: int(values[2].Int()),
 		CacheReadInputTokens:     cacheReadTokens,
@@ -5163,7 +5177,8 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	}
 
 	// 跳过所有 token 均为零的用量记录——上游未返回 usage 时不应写入数据库
-	if result.Usage.InputTokens == 0 && result.Usage.OutputTokens == 0 &&
+	if !result.ForceUsageRecord && result.Usage.InputTokens == 0 && result.Usage.AudioInputTokens == 0 &&
+		result.Usage.OutputTokens == 0 &&
 		result.Usage.CacheCreationInputTokens == 0 && result.Usage.CacheReadInputTokens == 0 &&
 		result.Usage.ImageOutputTokens == 0 && result.ImageCount == 0 {
 		return nil
@@ -5184,6 +5199,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	// Calculate cost
 	tokens := UsageTokens{
 		InputTokens:         actualInputTokens,
+		AudioInputTokens:    result.Usage.AudioInputTokens,
 		OutputTokens:        result.Usage.OutputTokens,
 		CacheCreationTokens: result.Usage.CacheCreationInputTokens,
 		CacheReadTokens:     result.Usage.CacheReadInputTokens,
@@ -5222,6 +5238,9 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	}
 	cost, err = s.calculateOpenAIRecordUsageCost(ctx, result, apiKey, billingModel, multiplier, tokens, serviceTier)
 	if err != nil {
+		if result.ForcePerRequestBilling {
+			return err
+		}
 		cost = &CostBreakdown{ActualCost: 0}
 	}
 
@@ -5362,7 +5381,10 @@ func (s *OpenAIGatewayService) calculateOpenAIRecordUsageCost(
 	if result != nil && result.ImageCount > 0 {
 		return s.calculateOpenAIImageCost(ctx, billingModel, apiKey, result, multiplier), nil
 	}
-	if s.resolver != nil && apiKey.Group != nil {
+	if result != nil && result.ForcePerRequestBilling {
+		return s.calculateOpenAIForcedPerRequestCost(ctx, billingModel, apiKey, multiplier)
+	}
+	if s.resolver != nil && apiKey != nil && apiKey.Group != nil {
 		gid := apiKey.Group.ID
 		return s.billingService.CalculateCostUnified(CostInput{
 			Ctx:            ctx,
@@ -5376,6 +5398,39 @@ func (s *OpenAIGatewayService) calculateOpenAIRecordUsageCost(
 		})
 	}
 	return s.billingService.CalculateCostWithServiceTier(billingModel, tokens, multiplier, serviceTier)
+}
+
+func (s *OpenAIGatewayService) calculateOpenAIForcedPerRequestCost(
+	ctx context.Context,
+	billingModel string,
+	apiKey *APIKey,
+	multiplier float64,
+) (*CostBreakdown, error) {
+	if s.billingService == nil || s.resolver == nil || apiKey == nil || apiKey.Group == nil {
+		return nil, fmt.Errorf("audio transcription requires positive per-request channel pricing for balance billing")
+	}
+	resolved := s.resolveOpenAIChannelPricing(ctx, billingModel, apiKey)
+	if resolved == nil || resolved.Mode != BillingModePerRequest {
+		return nil, fmt.Errorf("audio transcription requires positive per-request channel pricing for balance billing (model %q)", billingModel)
+	}
+
+	gid := apiKey.Group.ID
+	cost, err := s.billingService.CalculateCostUnified(CostInput{
+		Ctx:            ctx,
+		Model:          billingModel,
+		GroupID:        &gid,
+		RequestCount:   1,
+		RateMultiplier: multiplier,
+		Resolver:       s.resolver,
+		Resolved:       resolved,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if cost == nil || cost.TotalCost <= 0 {
+		return nil, fmt.Errorf("audio transcription requires positive per-request channel pricing for balance billing (model %q)", billingModel)
+	}
+	return cost, nil
 }
 
 func (s *OpenAIGatewayService) calculateOpenAIImageCost(

@@ -508,6 +508,29 @@ func TestTryModelFilePricing_WithImageOutput(t *testing.T) {
 	require.InDelta(t, 0.3, *result, 1e-12)
 }
 
+func TestTryModelFilePricing_WithAudioInput(t *testing.T) {
+	bs := &BillingService{
+		pricingService: &PricingService{
+			pricingData: map[string]*LiteLLMModelPricing{
+				"gpt-4o-transcribe": {
+					InputCostPerToken:      0.001,
+					InputCostPerAudioToken: 0.004,
+					OutputCostPerToken:     0.002,
+				},
+			},
+		},
+	}
+	tokens := UsageTokens{
+		InputTokens:      100,
+		AudioInputTokens: 80,
+		OutputTokens:     50,
+	}
+	result := tryModelFilePricing(bs, "gpt-4o-transcribe", tokens)
+	require.NotNil(t, result)
+	// 20*0.001 + 80*0.004 + 50*0.002 = 0.44
+	require.InDelta(t, 0.44, *result, 1e-12)
+}
+
 func TestTryModelFilePricing_WithCacheTokens(t *testing.T) {
 	bs := newTestBillingServiceWithPrices(map[string]*ModelPricing{
 		"claude-sonnet-4": {
