@@ -13,14 +13,32 @@ type BillingMode string
 const (
 	BillingModeToken      BillingMode = "token"       // 按 token 区间计费
 	BillingModePerRequest BillingMode = "per_request" // 按次计费（支持上下文窗口分层）
+	BillingModePerHour    BillingMode = "per_hour"    // 按音频时长计费，价格单位为 USD/小时
 	BillingModeImage      BillingMode = "image"       // 图片计费（当前按次，预留 token 计费）
 )
 
 // IsValid 检查 BillingMode 是否为合法值
 func (m BillingMode) IsValid() bool {
 	switch m {
-	case BillingModeToken, BillingModePerRequest, BillingModeImage, "":
+	case BillingModeToken, BillingModePerRequest, BillingModePerHour, BillingModeImage, "":
 		return true
+	}
+	return false
+}
+
+func isAudioTranscriptionBillingModel(model string) bool {
+	model = strings.ToLower(strings.TrimSpace(model))
+	if model == "" {
+		return false
+	}
+	if strings.Contains(model, "transcrib") || strings.Contains(model, "whisper") || strings.Contains(model, "speech-to-text") {
+		return true
+	}
+	normalized := strings.NewReplacer("_", "-", ".", "-", "/", "-", ":", "-").Replace(model)
+	for _, part := range strings.Split(normalized, "-") {
+		if part == "asr" || part == "stt" {
+			return true
+		}
 	}
 	return false
 }
@@ -83,7 +101,7 @@ type ChannelModelPricing struct {
 	CacheWritePrice  *float64          // 缓存写入价格
 	CacheReadPrice   *float64          // 缓存读取价格
 	ImageOutputPrice *float64          // 图片输出价格（向后兼容）
-	PerRequestPrice  *float64          // 默认按次计费价格（USD）
+	PerRequestPrice  *float64          // 按次价格；per_hour 模式下表示每小时价格（USD）
 	Intervals        []PricingInterval // 区间定价列表
 	CreatedAt        time.Time
 	UpdatedAt        time.Time

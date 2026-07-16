@@ -928,6 +928,9 @@ export default {
     perMillionTokens: '/ 1M tokens',
     unitPrice: 'Per-request price',
     imageUnitPrice: 'Per-image price',
+    durationCharge: 'Duration charge',
+    audioDuration: 'Audio duration',
+    hourlyUnitPrice: 'Hourly price',
     cacheRead: 'Read',
     cacheWrite: 'Write',
     serviceTier: 'Service tier',
@@ -1048,6 +1051,7 @@ export default {
       billingMode: 'Billing Mode',
       billingModeToken: 'Per Token',
       billingModePerRequest: 'Per Request',
+      billingModePerHour: 'Per Hour',
       billingModeImage: 'Per Image',
       inputPrice: 'Input',
       outputPrice: 'Output',
@@ -1055,9 +1059,11 @@ export default {
       cacheReadPrice: 'Cache Read',
       imageOutputPrice: 'Image Output',
       perRequestPrice: 'Per Request',
+      hourlyPrice: 'Hourly Price',
       intervals: 'Tiered Pricing',
       unitPerMillion: '/ 1M tokens',
-      unitPerRequest: '/ request'
+      unitPerRequest: '/ request',
+      unitPerHour: '/ hour'
     }
   },
 
@@ -2254,6 +2260,7 @@ export default {
         billingMode: 'Billing Mode',
         billingModeToken: 'Per Token',
         billingModePerRequest: 'Per Request',
+        billingModePerHour: 'Per Hour',
         billingModeImage: 'Per Image',
         inputPrice: 'Input',
         outputPrice: 'Output',
@@ -2261,9 +2268,11 @@ export default {
         cacheReadPrice: 'Cache Read',
         imageOutputPrice: 'Image Output',
         perRequestPrice: 'Per Request',
+        hourlyPrice: 'Hourly Price',
         intervals: 'Tiered Pricing',
         unitPerMillion: '/ 1M tokens',
-        unitPerRequest: '/ request'
+        unitPerRequest: '/ request',
+        unitPerHour: '/ hour'
       }
     },
 
@@ -2306,6 +2315,7 @@ export default {
       billingMode: {
         token: 'Token',
         perRequest: 'Per Request',
+        perHour: 'Per Hour',
         image: 'Image (Per Request)'
       },
       form: {
@@ -2339,6 +2349,10 @@ export default {
         noPricingRules: 'No pricing rules yet. Click "Add" to create one.',
         perRequestPrice: 'Price per Request',
         perRequestPriceRequired: 'Per-request price or billing tiers required for per-request/image billing mode',
+        hourlyPrice: 'Hourly Price',
+        hourlyPriceHint: 'Prorated by the uploaded audio duration; partial hours are billed proportionally.',
+        hourlyPriceRequired: 'Per-hour billing requires a positive hourly price',
+        hourlyModelRequired: 'Per-hour billing is only supported for audio transcription models',
         tierLabel: 'Tier',
         resolution: 'Resolution',
         modelMapping: 'Model Mapping',
@@ -4085,6 +4099,7 @@ export default {
       billingMode: 'Billing Mode',
       billingModeToken: 'Token',
       billingModePerRequest: 'Per Request',
+      billingModePerHour: 'Per Hour',
       billingModeImage: 'Image',
       allBillingModes: 'All Billing Modes',
       ipAddress: 'IP',

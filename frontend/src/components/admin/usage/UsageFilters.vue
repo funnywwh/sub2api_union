@@ -266,6 +266,7 @@ const billingModeOptions = ref<SelectOption[]>([
   { value: null, label: t('admin.usage.allBillingModes') },
   { value: 'token', label: t('admin.usage.billingModeToken') },
   { value: 'per_request', label: t('admin.usage.billingModePerRequest') },
+  { value: 'per_hour', label: t('admin.usage.billingModePerHour', '按小时') },
   { value: 'image', label: t('admin.usage.billingModeImage') }
 ])
 

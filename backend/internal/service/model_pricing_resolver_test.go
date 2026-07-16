@@ -379,6 +379,25 @@ func TestResolve_WithChannelOverride_PerRequestNilPrice(t *testing.T) {
 	require.Len(t, resolved.RequestTiers, 1)
 }
 
+func TestResolve_WithChannelOverride_PerHour(t *testing.T) {
+	r := newResolverWithChannel(t, []ChannelModelPricing{{
+		Platform:        "anthropic",
+		Models:          []string{"gpt-4o-mini-transcribe"},
+		BillingMode:     BillingModePerHour,
+		PerRequestPrice: testPtrFloat64(1.2),
+	}})
+
+	resolved := r.Resolve(context.Background(), PricingInput{
+		Model:   "gpt-4o-mini-transcribe",
+		GroupID: groupIDPtr(),
+	})
+
+	require.NotNil(t, resolved)
+	require.Equal(t, BillingModePerHour, resolved.Mode)
+	require.Equal(t, PricingSourceChannel, resolved.Source)
+	require.InDelta(t, 1.2, resolved.DefaultPerRequestPrice, 1e-12)
+}
+
 // ---------------------------------------------------------------------------
 // 3. Image mode overrides
 // ---------------------------------------------------------------------------

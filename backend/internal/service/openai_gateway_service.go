@@ -233,15 +233,16 @@ type OpenAIForwardResult struct {
 	OpenAIWSMode    bool
 	ResponseHeaders http.Header
 	Duration        time.Duration
+	AudioDuration   time.Duration
 	FirstTokenMs    *int
 	ImageCount      int
 	ImageSize       string
 	// ForceUsageRecord keeps request-based endpoints visible even when the
 	// upstream does not return token usage (for example ChatGPT transcription).
 	ForceUsageRecord bool
-	// ForcePerRequestBilling requires a positive per-request channel price instead
+	// ForceAudioBilling uses per-request or per-hour transcription pricing instead
 	// of falling back to zero-token token billing.
-	ForcePerRequestBilling bool
+	ForceAudioBilling bool
 }
 
 type OpenAIWSRetryMetricsSnapshot struct {
@@ -354,6 +355,7 @@ type OpenAIGatewayService struct {
 
 	openaiWSFallbackUntil sync.Map // key: int64(accountID), value: time.Time
 	openaiWSRetryMetrics  openAIWSRetryMetrics
+	audioPricingRefreshes sync.Map // key: audioPricingRefreshKey, value: time.Time
 	responseHeaderFilter  *responseheaders.CompiledHeaderFilter
 	codexSnapshotThrottle *accountWriteThrottle
 }
@@ -5236,9 +5238,10 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	if result.ServiceTier != nil {
 		serviceTier = strings.TrimSpace(*result.ServiceTier)
 	}
+	simpleMode := s.cfg != nil && s.cfg.RunMode == config.RunModeSimple
 	cost, err = s.calculateOpenAIRecordUsageCost(ctx, result, apiKey, billingModel, multiplier, tokens, serviceTier)
 	if err != nil {
-		if result.ForcePerRequestBilling {
+		if result.ForceAudioBilling && !simpleMode {
 			return err
 		}
 		cost = &CostBreakdown{ActualCost: 0}
@@ -5298,6 +5301,14 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	usageLog.Stream = result.Stream
 	usageLog.OpenAIWSMode = result.OpenAIWSMode
 	usageLog.DurationMs = &durationMs
+	if result.AudioDuration > 0 {
+		audioDurationMs := int(result.AudioDuration.Milliseconds())
+		usageLog.AudioDurationMs = &audioDurationMs
+	}
+	if cost != nil && cost.HourlyPrice > 0 {
+		hourlyPrice := cost.HourlyPrice
+		usageLog.HourlyPrice = &hourlyPrice
+	}
 	usageLog.FirstTokenMs = result.FirstTokenMs
 	usageLog.CreatedAt = time.Now()
 	// 设置渠道信息
@@ -5335,11 +5346,11 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	if apiKey.GroupID != nil {
 		applyAccountStatsCost(ctx, usageLog, s.channelService, s.billingService,
 			account.ID, *apiKey.GroupID, result.UpstreamModel, result.Model,
-			tokens, cost.TotalCost,
+			tokens, cost.TotalCost, result.AudioDuration,
 		)
 	}
 
-	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
+	if simpleMode {
 		writeUsageLogBestEffort(ctx, s.usageLogRepo, usageLog, "service.openai_gateway")
 		logger.LegacyPrintf("service.openai_gateway", "[SIMPLE MODE] Usage recorded (not billed): user=%d, tokens=%d", usageLog.UserID, usageLog.TotalTokens())
 		s.deferredService.ScheduleLastUsedUpdate(account.ID)
@@ -5381,10 +5392,14 @@ func (s *OpenAIGatewayService) calculateOpenAIRecordUsageCost(
 	if result != nil && result.ImageCount > 0 {
 		return s.calculateOpenAIImageCost(ctx, billingModel, apiKey, result, multiplier), nil
 	}
-	if result != nil && result.ForcePerRequestBilling {
-		return s.calculateOpenAIForcedPerRequestCost(ctx, billingModel, apiKey, multiplier)
+	if result != nil && result.ForceAudioBilling {
+		return s.calculateAudioTranscriptionCost(ctx, billingModel, apiKey, multiplier, result.AudioDuration)
 	}
 	if s.resolver != nil && apiKey != nil && apiKey.Group != nil {
+		audioDuration := time.Duration(0)
+		if result != nil {
+			audioDuration = result.AudioDuration
+		}
 		gid := apiKey.Group.ID
 		return s.billingService.CalculateCostUnified(CostInput{
 			Ctx:            ctx,
@@ -5392,21 +5407,13 @@ func (s *OpenAIGatewayService) calculateOpenAIRecordUsageCost(
 			GroupID:        &gid,
 			Tokens:         tokens,
 			RequestCount:   1,
+			AudioDuration:  audioDuration,
 			RateMultiplier: multiplier,
 			ServiceTier:    serviceTier,
 			Resolver:       s.resolver,
 		})
 	}
 	return s.billingService.CalculateCostWithServiceTier(billingModel, tokens, multiplier, serviceTier)
-}
-
-func (s *OpenAIGatewayService) calculateOpenAIForcedPerRequestCost(
-	ctx context.Context,
-	billingModel string,
-	apiKey *APIKey,
-	multiplier float64,
-) (*CostBreakdown, error) {
-	return s.calculatePositiveAudioTranscriptionPerRequestCost(ctx, billingModel, apiKey, multiplier)
 }
 
 func (s *OpenAIGatewayService) calculateOpenAIImageCost(

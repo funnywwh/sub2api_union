@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"strings"
+	"time"
 )
 
 // resolveAccountStatsCost 计算账号统计定价费用。
@@ -26,6 +27,7 @@ func resolveAccountStatsCost(
 	tokens UsageTokens,
 	requestCount int,
 	totalCost float64,
+	audioDuration ...time.Duration,
 ) *float64 {
 	if channelService == nil || upstreamModel == "" {
 		return nil
@@ -38,7 +40,7 @@ func resolveAccountStatsCost(
 	platform := channelService.GetGroupPlatform(ctx, groupID)
 
 	// 优先级 1：自定义规则（始终尝试）
-	if cost := tryCustomRules(channel, accountID, groupID, platform, upstreamModel, tokens, requestCount); cost != nil {
+	if cost := tryCustomRules(channel, accountID, groupID, platform, upstreamModel, tokens, requestCount, firstAudioDuration(audioDuration)); cost != nil {
 		return cost
 	}
 
@@ -92,7 +94,7 @@ func tryModelFilePricing(billingService *BillingService, model string, tokens Us
 // tryCustomRules 遍历自定义规则，按数组顺序先命中为准。
 func tryCustomRules(
 	channel *Channel, accountID, groupID int64,
-	platform, model string, tokens UsageTokens, requestCount int,
+	platform, model string, tokens UsageTokens, requestCount int, audioDuration ...time.Duration,
 ) *float64 {
 	modelLower := strings.ToLower(model)
 	for _, rule := range channel.AccountStatsPricingRules {
@@ -103,7 +105,7 @@ func tryCustomRules(
 		if pricing == nil {
 			continue // 规则匹配但模型不在规则定价中，继续下一条
 		}
-		return calculateStatsCost(pricing, tokens, requestCount)
+		return calculateStatsCost(pricing, tokens, requestCount, firstAudioDuration(audioDuration))
 	}
 	return nil
 }
@@ -172,16 +174,33 @@ func isPlatformMatch(queryPlatform, pricingPlatform string) bool {
 }
 
 // calculateStatsCost 使用给定的定价计算费用（不含任何倍率，原始费用）。
-func calculateStatsCost(pricing *ChannelModelPricing, tokens UsageTokens, requestCount int) *float64 {
+func calculateStatsCost(pricing *ChannelModelPricing, tokens UsageTokens, requestCount int, audioDuration ...time.Duration) *float64 {
 	if pricing == nil {
 		return nil
 	}
 	switch pricing.BillingMode {
 	case BillingModePerRequest, BillingModeImage:
 		return calculatePerRequestStatsCost(pricing, requestCount)
+	case BillingModePerHour:
+		return calculateHourlyStatsCost(pricing, firstAudioDuration(audioDuration))
 	default:
 		return calculateTokenStatsCost(pricing, tokens)
 	}
+}
+
+func calculateHourlyStatsCost(pricing *ChannelModelPricing, audioDuration time.Duration) *float64 {
+	if pricing.PerRequestPrice == nil || *pricing.PerRequestPrice <= 0 || audioDuration <= 0 {
+		return nil
+	}
+	cost := *pricing.PerRequestPrice * audioDuration.Hours()
+	return &cost
+}
+
+func firstAudioDuration(values []time.Duration) time.Duration {
+	if len(values) == 0 {
+		return 0
+	}
+	return values[0]
 }
 
 // calculatePerRequestStatsCost 按次/图片计费。
@@ -238,12 +257,13 @@ func applyAccountStatsCost(
 	upstreamModel, requestedModel string,
 	tokens UsageTokens,
 	totalCost float64,
+	audioDuration time.Duration,
 ) {
 	model := upstreamModel
 	if model == "" {
 		model = requestedModel
 	}
 	usageLog.AccountStatsCost = resolveAccountStatsCost(
-		ctx, cs, bs, accountID, groupID, model, tokens, 1, totalCost,
+		ctx, cs, bs, accountID, groupID, model, tokens, 1, totalCost, audioDuration,
 	)
 }

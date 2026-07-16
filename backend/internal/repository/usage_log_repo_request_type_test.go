@@ -73,6 +73,8 @@ func TestUsageLogRepositoryCreateSyncRequestTypeAndLegacyFields(t *testing.T) {
 			true,
 			true,
 			sqlmock.AnyArg(), // duration_ms
+			sqlmock.AnyArg(), // audio_duration_ms
+			sqlmock.AnyArg(), // hourly_price
 			sqlmock.AnyArg(), // first_token_ms
 			sqlmock.AnyArg(), // user_agent
 			sqlmock.AnyArg(), // ip_address
@@ -129,9 +131,9 @@ func TestUsageLogRepositoryCreate_PersistsServiceTier(t *testing.T) {
 			sqlmock.AnyArg(), // conversation_id
 			log.Model,
 			log.RequestedModel,
-			sqlmock.AnyArg(),
-			sqlmock.AnyArg(),
-			sqlmock.AnyArg(),
+			sqlmock.AnyArg(), // upstream_model
+			sqlmock.AnyArg(), // group_id
+			sqlmock.AnyArg(), // subscription_id
 			log.InputTokens,
 			log.OutputTokens,
 			log.CacheCreationTokens,
@@ -152,6 +154,8 @@ func TestUsageLogRepositoryCreate_PersistsServiceTier(t *testing.T) {
 			int16(service.RequestTypeSync),
 			false,
 			false,
+			sqlmock.AnyArg(),
+			sqlmock.AnyArg(),
 			sqlmock.AnyArg(),
 			sqlmock.AnyArg(),
 			sqlmock.AnyArg(),
@@ -646,6 +650,8 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			false, // legacy stream
 			false, // legacy openai ws
 			sql.NullInt64{},
+			sql.NullInt64{Valid: true, Int64: 90_000},
+			sql.NullFloat64{Valid: true, Float64: 0.2},
 			sql.NullInt64{},
 			sql.NullString{},
 			sql.NullString{},
@@ -669,6 +675,10 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 		require.Equal(t, service.RequestTypeWSV2, log.RequestType)
 		require.True(t, log.Stream)
 		require.True(t, log.OpenAIWSMode)
+		require.NotNil(t, log.AudioDurationMs)
+		require.Equal(t, 90_000, *log.AudioDurationMs)
+		require.NotNil(t, log.HourlyPrice)
+		require.InDelta(t, 0.2, *log.HourlyPrice, 1e-12)
 	})
 
 	t.Run("request_type_unknown_falls_back_to_legacy", func(t *testing.T) {
@@ -695,6 +705,8 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			true,
 			false,
 			sql.NullInt64{},
+			sql.NullInt64{},
+			sql.NullFloat64{},
 			sql.NullInt64{},
 			sql.NullString{},
 			sql.NullString{},
@@ -744,6 +756,8 @@ func TestScanUsageLogRequestTypeAndLegacyFallback(t *testing.T) {
 			false,
 			false,
 			sql.NullInt64{},
+			sql.NullInt64{},
+			sql.NullFloat64{},
 			sql.NullInt64{},
 			sql.NullString{},
 			sql.NullString{},

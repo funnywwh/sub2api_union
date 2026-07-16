@@ -12,6 +12,7 @@ import (
 	"mime"
 	"mime/multipart"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -34,11 +35,16 @@ const (
 	openAIAudioMaxFileSize    = 25 << 20
 	openAIAudioMaxRequestSize = 27 << 20
 
-	// ChatGPT's transcription endpoint does not return token usage. Match the
-	// image billing fallback behavior by charging a safe default when no
-	// positive channel per-request price is configured.
-	defaultAudioTranscriptionPerRequestPriceUSD = 0.2
+	// ChatGPT's transcription endpoint does not return token usage. When no
+	// channel price is configured, bill the uploaded audio by its media length.
+	defaultAudioTranscriptionPerHourPriceUSD = 0.2
+	audioPricingRefreshCooldown              = time.Minute
 )
+
+type audioPricingRefreshKey struct {
+	groupID int64
+	model   string
+}
 
 type OpenAIAudioTranscriptionRequest struct {
 	ContentType     string
@@ -51,6 +57,7 @@ type OpenAIAudioTranscriptionRequest struct {
 	FileName        string
 	FileContentType string
 	FileSize        int64
+	AudioDuration   time.Duration
 	bodyHash        string
 }
 
@@ -229,11 +236,11 @@ func resolveAudioTranscriptionBillingModel(requestedModel string, channelMapping
 	)
 }
 
-func audioTranscriptionPerRequestBillingError(billingModel string) error {
+func audioTranscriptionBillingError(billingModel string) error {
 	if strings.TrimSpace(billingModel) == "" {
-		return fmt.Errorf("audio transcription requires positive per-request channel pricing for balance billing")
+		return fmt.Errorf("audio transcription billing is not configured")
 	}
-	return fmt.Errorf("audio transcription requires positive per-request channel pricing for balance billing (model %q)", billingModel)
+	return fmt.Errorf("audio transcription billing is not configured (model %q)", billingModel)
 }
 
 func (s *OpenAIGatewayService) ValidateAudioTranscriptionBilling(
@@ -244,15 +251,14 @@ func (s *OpenAIGatewayService) ValidateAudioTranscriptionBilling(
 	requestedModel string,
 	channelMapping ChannelMappingResult,
 	responseFormat string,
+	audioDuration time.Duration,
 ) error {
 	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
 		return nil
 	}
 	_, upstreamModel := resolveAudioTranscriptionUsageModels(account, requestedModel, channelMapping)
-	if !audioTranscriptionRequiresPerRequestBilling(account, upstreamModel, responseFormat) {
-		return nil
-	}
-	return s.validatePositivePerRequestAudioTranscriptionPricing(ctx, apiKey, requestedModel, channelMapping, upstreamModel)
+	requiresAudioFallback := audioTranscriptionRequiresPerRequestBilling(account, upstreamModel, responseFormat)
+	return s.validateAudioTranscriptionPricing(ctx, apiKey, requestedModel, channelMapping, upstreamModel, audioDuration, requiresAudioFallback)
 }
 
 // ValidateOAuthAudioTranscriptionBilling ensures balance-billed requests do
@@ -263,6 +269,7 @@ func (s *OpenAIGatewayService) ValidateOAuthAudioTranscriptionBilling(
 	_ *UserSubscription,
 	requestedModel string,
 	channelMapping ChannelMappingResult,
+	audioDuration time.Duration,
 ) error {
 	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
 		return nil
@@ -271,39 +278,82 @@ func (s *OpenAIGatewayService) ValidateOAuthAudioTranscriptionBilling(
 	if upstreamModel == "" {
 		upstreamModel = strings.TrimSpace(requestedModel)
 	}
-	return s.validatePositivePerRequestAudioTranscriptionPricing(ctx, apiKey, requestedModel, channelMapping, upstreamModel)
+	return s.validateAudioTranscriptionPricing(ctx, apiKey, requestedModel, channelMapping, upstreamModel, audioDuration, true)
 }
 
-func (s *OpenAIGatewayService) validatePositivePerRequestAudioTranscriptionPricing(
+func (s *OpenAIGatewayService) validateAudioTranscriptionPricing(
 	ctx context.Context,
 	apiKey *APIKey,
 	requestedModel string,
 	channelMapping ChannelMappingResult,
 	upstreamModel string,
+	audioDuration time.Duration,
+	requiresAudioFallback bool,
 ) error {
 	billingModel := resolveAudioTranscriptionBillingModel(requestedModel, channelMapping, upstreamModel)
-	_, err := s.calculatePositiveAudioTranscriptionPerRequestCost(ctx, billingModel, apiKey, 1)
-	return err
+	if apiKey == nil || apiKey.Group == nil || s.resolver == nil || s.billingService == nil {
+		if !requiresAudioFallback {
+			if audioDuration <= 0 {
+				return fmt.Errorf("audio duration could not be determined for fallback transcription billing")
+			}
+			return nil
+		}
+		return audioTranscriptionBillingError(billingModel)
+	}
+	if !requiresAudioFallback {
+		resolved := s.resolveOpenAIChannelPricing(ctx, billingModel, apiKey)
+		if resolved == nil || resolved.Mode == BillingModeToken {
+			if audioDuration <= 0 {
+				return fmt.Errorf("audio duration could not be determined for fallback transcription billing")
+			}
+			// Token pricing is valid for API-key JSON transcription models that
+			// return usage. Do not probe/refresh the full channel cache merely to
+			// look for an audio fallback that this request does not need.
+			return nil
+		}
+		if resolved.Mode != BillingModePerRequest && audioDuration <= 0 {
+			return fmt.Errorf("audio duration could not be determined for fallback transcription billing")
+		}
+	}
+
+	resolved := s.resolveAudioTranscriptionChannelPricing(ctx, billingModel, apiKey)
+	if resolved != nil && resolved.Mode == BillingModePerRequest {
+		return nil
+	}
+	if resolved == nil && !requiresAudioFallback {
+		if audioDuration <= 0 {
+			return fmt.Errorf("audio duration could not be determined for fallback transcription billing")
+		}
+		return nil
+	}
+	if audioDuration <= 0 {
+		return fmt.Errorf("audio duration could not be determined for per-hour transcription billing")
+	}
+	return nil
 }
 
-// calculatePositiveAudioTranscriptionPerRequestCost resolves and calculates
-// the channel's per-request price. A failed first lookup forces one database
-// refresh so admin pricing changes also take effect immediately in other
-// gateway processes whose local channel cache is still valid.
-func (s *OpenAIGatewayService) calculatePositiveAudioTranscriptionPerRequestCost(
+// resolveAudioTranscriptionChannelPricing accepts either per-request or
+// per-hour channel pricing. A failed first lookup forces one database refresh
+// so admin pricing changes take effect in other gateway processes as well.
+func (s *OpenAIGatewayService) resolveAudioTranscriptionChannelPricing(
 	ctx context.Context,
 	billingModel string,
 	apiKey *APIKey,
-	multiplier float64,
-) (*CostBreakdown, error) {
+) *ResolvedPricing {
 	if apiKey == nil || apiKey.Group == nil || s.resolver == nil || s.billingService == nil {
-		return nil, audioTranscriptionPerRequestBillingError(billingModel)
+		return nil
 	}
 
-	calculate := func() (*CostBreakdown, bool) {
+	resolve := func() *ResolvedPricing {
 		resolved := s.resolveOpenAIChannelPricing(ctx, billingModel, apiKey)
-		if resolved == nil || resolved.Mode != BillingModePerRequest {
-			return nil, false
+		if resolved == nil {
+			return nil
+		}
+		if resolved.Mode == BillingModePerHour && resolved.DefaultPerRequestPrice > 0 {
+			return resolved
+		}
+		if resolved.Mode != BillingModePerRequest {
+			return nil
 		}
 
 		gid := apiKey.Group.ID
@@ -312,37 +362,95 @@ func (s *OpenAIGatewayService) calculatePositiveAudioTranscriptionPerRequestCost
 			Model:          billingModel,
 			GroupID:        &gid,
 			RequestCount:   1,
-			RateMultiplier: multiplier,
+			RateMultiplier: 1,
 			Resolver:       s.resolver,
 			Resolved:       resolved,
 		})
-		return cost, err == nil && cost != nil && cost.TotalCost > 0
+		if err != nil || cost == nil || cost.TotalCost <= 0 {
+			return nil
+		}
+		return resolved
 	}
 
-	if cost, ok := calculate(); ok {
-		return cost, nil
+	if resolved := resolve(); resolved != nil {
+		return resolved
 	}
 
-	if s.channelService != nil {
+	if s.channelService != nil && s.shouldRefreshAudioPricing(apiKey, billingModel) {
 		if err := s.channelService.forceRefreshCache(ctx); err == nil {
-			if cost, ok := calculate(); ok {
-				return cost, nil
+			if resolved := resolve(); resolved != nil {
+				return resolved
 			}
 		}
 	}
 
-	return defaultAudioTranscriptionPerRequestCost(multiplier), nil
+	return nil
 }
 
-func defaultAudioTranscriptionPerRequestCost(multiplier float64) *CostBreakdown {
+func (s *OpenAIGatewayService) shouldRefreshAudioPricing(apiKey *APIKey, billingModel string) bool {
+	if s == nil || apiKey == nil || apiKey.Group == nil {
+		return false
+	}
+	key := audioPricingRefreshKey{groupID: apiKey.Group.ID, model: strings.ToLower(strings.TrimSpace(billingModel))}
+	now := time.Now()
+	if value, ok := s.audioPricingRefreshes.Load(key); ok {
+		if last, valid := value.(time.Time); valid && now.Sub(last) < audioPricingRefreshCooldown {
+			return false
+		}
+	}
+	s.audioPricingRefreshes.Store(key, now)
+	return true
+}
+
+func (s *OpenAIGatewayService) calculateAudioTranscriptionCost(
+	ctx context.Context,
+	billingModel string,
+	apiKey *APIKey,
+	multiplier float64,
+	audioDuration time.Duration,
+) (*CostBreakdown, error) {
+	if apiKey == nil || apiKey.Group == nil || s.resolver == nil || s.billingService == nil {
+		return nil, audioTranscriptionBillingError(billingModel)
+	}
+
+	resolved := s.resolveAudioTranscriptionChannelPricing(ctx, billingModel, apiKey)
+	if resolved != nil && resolved.Mode == BillingModePerRequest {
+		gid := apiKey.Group.ID
+		return s.billingService.CalculateCostUnified(CostInput{
+			Ctx:            ctx,
+			Model:          billingModel,
+			GroupID:        &gid,
+			RequestCount:   1,
+			RateMultiplier: multiplier,
+			Resolver:       s.resolver,
+			Resolved:       resolved,
+		})
+	}
+
+	hourlyPrice := defaultAudioTranscriptionPerHourPriceUSD
+	if resolved != nil && resolved.Mode == BillingModePerHour {
+		hourlyPrice = resolved.DefaultPerRequestPrice
+	}
+	return calculateAudioTranscriptionHourlyCost(hourlyPrice, audioDuration, multiplier)
+}
+
+func calculateAudioTranscriptionHourlyCost(hourlyPrice float64, audioDuration time.Duration, multiplier float64) (*CostBreakdown, error) {
+	if hourlyPrice <= 0 {
+		return nil, fmt.Errorf("audio transcription hourly price must be positive")
+	}
+	if audioDuration <= 0 {
+		return nil, fmt.Errorf("audio duration could not be determined for per-hour transcription billing")
+	}
 	if multiplier < 0 {
 		multiplier = 0
 	}
+	totalCost := hourlyPrice * audioDuration.Hours()
 	return &CostBreakdown{
-		TotalCost:   defaultAudioTranscriptionPerRequestPriceUSD,
-		ActualCost:  defaultAudioTranscriptionPerRequestPriceUSD * multiplier,
-		BillingMode: string(BillingModePerRequest),
-	}
+		TotalCost:   totalCost,
+		ActualCost:  totalCost * multiplier,
+		BillingMode: string(BillingModePerHour),
+		HourlyPrice: hourlyPrice,
+	}, nil
 }
 
 func (s *OpenAIGatewayService) ParseOpenAIAudioTranscriptionRequest(c *gin.Context) (*OpenAIAudioTranscriptionRequest, error) {
@@ -400,7 +508,8 @@ func (s *OpenAIGatewayService) ParseOpenAIAudioTranscriptionRequest(c *gin.Conte
 				_ = part.Close()
 				return nil, fmt.Errorf("only one file upload is supported")
 			}
-			fileSize, copyErr := io.Copy(io.Discard, io.LimitReader(part, openAIAudioMaxFileSize+1))
+			fileContentType := strings.TrimSpace(part.Header.Get("Content-Type"))
+			fileSize, audioDuration, copyErr := inspectAudioTranscriptionPart(part)
 			_ = part.Close()
 			if copyErr != nil {
 				return nil, fmt.Errorf("read audio file: %w", copyErr)
@@ -412,8 +521,9 @@ func (s *OpenAIGatewayService) ParseOpenAIAudioTranscriptionRequest(c *gin.Conte
 				return nil, fmt.Errorf("file exceeds maximum size of 25 MB: %w", &http.MaxBytesError{Limit: openAIAudioMaxFileSize})
 			}
 			parsed.FileName = fileName
-			parsed.FileContentType = strings.TrimSpace(part.Header.Get("Content-Type"))
+			parsed.FileContentType = fileContentType
 			parsed.FileSize = fileSize
+			parsed.AudioDuration = audioDuration
 			continue
 		}
 
@@ -461,6 +571,28 @@ func (s *OpenAIGatewayService) ParseOpenAIAudioTranscriptionRequest(c *gin.Conte
 	return parsed, nil
 }
 
+func inspectAudioTranscriptionPart(part io.Reader) (int64, time.Duration, error) {
+	tempFile, err := os.CreateTemp("", "sub2api-audio-duration-*")
+	if err != nil {
+		return 0, 0, fmt.Errorf("create temporary audio file: %w", err)
+	}
+	tempPath := tempFile.Name()
+	defer func() { _ = os.Remove(tempPath) }()
+	defer func() { _ = tempFile.Close() }()
+
+	fileSize, err := io.Copy(tempFile, io.LimitReader(part, openAIAudioMaxFileSize+1))
+	if err != nil {
+		return 0, 0, err
+	}
+	if fileSize <= 0 || fileSize > openAIAudioMaxFileSize {
+		return fileSize, 0, nil
+	}
+	if _, err := tempFile.Seek(0, io.SeekStart); err != nil {
+		return 0, 0, fmt.Errorf("rewind temporary audio file: %w", err)
+	}
+	return fileSize, detectAudioDurationReader(tempFile, fileSize), nil
+}
+
 func (s *OpenAIGatewayService) ForwardAudioTranscription(
 	ctx context.Context,
 	c *gin.Context,
@@ -481,7 +613,7 @@ func (s *OpenAIGatewayService) ForwardAudioTranscription(
 		parsed.Model,
 		ChannelMappingResult{MappedModel: channelMappedModel},
 	)
-	forcePerRequestBilling := audioTranscriptionRequiresPerRequestBilling(account, upstreamModel, parsed.ResponseFormat)
+	forceAudioBilling := audioTranscriptionRequiresPerRequestBilling(account, upstreamModel, parsed.ResponseFormat)
 
 	var forwardBody []byte
 	var forwardContentType string
@@ -572,21 +704,22 @@ func (s *OpenAIGatewayService) ForwardAudioTranscription(
 	if err != nil {
 		return nil, err
 	}
-	if !forcePerRequestBilling && !audioTranscriptionHasBillableUsage(usage) {
-		forcePerRequestBilling = true
+	if !forceAudioBilling && !audioTranscriptionHasBillableUsage(usage) {
+		forceAudioBilling = true
 	}
 
 	return &OpenAIForwardResult{
-		RequestID:              resp.Header.Get("x-request-id"),
-		Usage:                  usage,
-		Model:                  requestModel,
-		UpstreamModel:          upstreamModel,
-		Stream:                 parsed.Stream,
-		ResponseHeaders:        resp.Header.Clone(),
-		Duration:               time.Since(startTime),
-		FirstTokenMs:           firstTokenMs,
-		ForceUsageRecord:       true,
-		ForcePerRequestBilling: forcePerRequestBilling,
+		RequestID:         resp.Header.Get("x-request-id"),
+		Usage:             usage,
+		Model:             requestModel,
+		UpstreamModel:     upstreamModel,
+		Stream:            parsed.Stream,
+		ResponseHeaders:   resp.Header.Clone(),
+		Duration:          time.Since(startTime),
+		AudioDuration:     parsed.AudioDuration,
+		FirstTokenMs:      firstTokenMs,
+		ForceUsageRecord:  true,
+		ForceAudioBilling: forceAudioBilling,
 	}, nil
 }
 

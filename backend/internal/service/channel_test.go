@@ -219,6 +219,7 @@ func TestBillingModeIsValid(t *testing.T) {
 	}{
 		{"token", BillingModeToken, true},
 		{"per_request", BillingModePerRequest, true},
+		{"per_hour", BillingModePerHour, true},
 		{"image", BillingModeImage, true},
 		{"empty", BillingMode(""), true},
 		{"unknown", BillingMode("unknown"), false},
@@ -481,7 +482,6 @@ func TestSupportedModels_WildcardExpandedFromPricing(t *testing.T) {
 		require.NotContains(t, m.Name, "*")
 	}
 }
-
 
 func TestSupportedModels_MissingPricingKeepsNilPricing(t *testing.T) {
 	ch := &Channel{

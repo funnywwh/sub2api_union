@@ -119,6 +119,13 @@ func (UsageLog) Fields() []ent.Field {
 		field.Int("duration_ms").
 			Optional().
 			Nillable(),
+		field.Int("audio_duration_ms").
+			Optional().
+			Nillable(),
+		field.Float("hourly_price").
+			Optional().
+			Nillable().
+			SchemaType(map[string]string{dialect.Postgres: "decimal(20,10)"}),
 		field.Int("first_token_ms").
 			Optional().
 			Nillable(),

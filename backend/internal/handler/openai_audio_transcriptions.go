@@ -43,6 +43,16 @@ func (h *OpenAIGatewayHandler) AudioTranscriptions(c *gin.Context) {
 	if !h.ensureResponsesDependencies(c, reqLog) {
 		return
 	}
+	// Admit the request before buffering and inspecting a potentially 25 MB
+	// upload. Streaming has not started yet, so waiting errors are regular HTTP
+	// responses regardless of the multipart stream flag parsed below.
+	userReleaseFunc, acquired := h.acquireResponsesUserSlot(c, subject.UserID, subject.Concurrency, false, &streamStarted, reqLog)
+	if !acquired {
+		return
+	}
+	if userReleaseFunc != nil {
+		defer userReleaseFunc()
+	}
 
 	parsed, err := h.gatewayService.ParseOpenAIAudioTranscriptionRequest(c)
 	if err != nil {
@@ -60,6 +70,7 @@ func (h *OpenAIGatewayHandler) AudioTranscriptions(c *gin.Context) {
 		zap.String("response_format", parsed.ResponseFormat),
 		zap.String("file_content_type", parsed.FileContentType),
 		zap.Int64("file_size", parsed.FileSize),
+		zap.Int64("audio_duration_ms", parsed.AudioDuration.Milliseconds()),
 	)
 	// Never put binary audio data into ops request logs.
 	setOpsRequestContext(c, parsed.Model, parsed.Stream, nil)
@@ -73,13 +84,6 @@ func (h *OpenAIGatewayHandler) AudioTranscriptions(c *gin.Context) {
 
 	service.SetOpsLatencyMs(c, service.OpsAuthLatencyMsKey, time.Since(requestStart).Milliseconds())
 	routingStart := time.Now()
-	userReleaseFunc, acquired := h.acquireResponsesUserSlot(c, subject.UserID, subject.Concurrency, parsed.Stream, &streamStarted, reqLog)
-	if !acquired {
-		return
-	}
-	if userReleaseFunc != nil {
-		defer userReleaseFunc()
-	}
 
 	if err := h.billingCacheService.CheckBillingEligibility(c.Request.Context(), apiKey.User, apiKey, apiKey.Group, subscription); err != nil {
 		reqLog.Info("openai.audio_transcriptions.billing_eligibility_check_failed", zap.Error(err))
@@ -147,6 +151,7 @@ func (h *OpenAIGatewayHandler) AudioTranscriptions(c *gin.Context) {
 			parsed.Model,
 			channelMapping,
 			parsed.ResponseFormat,
+			parsed.AudioDuration,
 		); err != nil {
 			if selection.ReleaseFunc != nil {
 				selection.ReleaseFunc()

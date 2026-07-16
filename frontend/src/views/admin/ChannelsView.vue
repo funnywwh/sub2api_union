@@ -1368,7 +1368,7 @@ async function handleSubmit() {
     }
   }
 
-  // 校验 per_request/image 模式必须有价格 (只校验启用的平台)
+  // 校验 per_request/per_hour/image 模式必须有价格 (只校验启用的平台)
   for (const section of form.platforms.filter(s => s.enabled)) {
     for (const entry of section.model_pricing) {
       if (entry.models.length === 0) continue
@@ -1377,6 +1377,23 @@ async function handleSubmit() {
           (!entry.intervals || entry.intervals.length === 0)) {
         appStore.showError(t('admin.channels.form.perRequestPriceRequired', '按次/图片计费模式必须设置默认价格或至少一个计费层级'))
         return
+      }
+      if (entry.billing_mode === 'per_hour' &&
+          (entry.per_request_price == null || entry.per_request_price === '' || Number(entry.per_request_price) <= 0)) {
+        appStore.showError(t('admin.channels.form.hourlyPriceRequired', '按小时计费模式必须设置大于 0 的每小时价格'))
+        return
+      }
+      if (entry.billing_mode === 'per_hour' && entry.models.some(model => !isAudioTranscriptionBillingModel(model))) {
+        appStore.showError(t('admin.channels.form.hourlyModelRequired', '按小时计费仅支持语音转写模型'))
+        return
+      }
+    }
+    for (const rule of section.account_stats_pricing_rules) {
+      for (const entry of rule.pricing) {
+        if (entry.billing_mode === 'per_hour' && entry.models.some(model => !isAudioTranscriptionBillingModel(model))) {
+          appStore.showError(t('admin.channels.form.hourlyModelRequired', '按小时计费仅支持语音转写模型'))
+          return
+        }
       }
     }
   }
@@ -1441,6 +1458,13 @@ async function handleSubmit() {
   } finally {
     submitting.value = false
   }
+}
+
+function isAudioTranscriptionBillingModel(model: string): boolean {
+  const value = model.trim().toLowerCase()
+  if (!value) return false
+  if (value.includes('transcrib') || value.includes('whisper') || value.includes('speech-to-text')) return true
+  return value.replace(/[_.\/:]/g, '-').split('-').some(part => part === 'asr' || part === 'stt')
 }
 
 // ── Toggle status ──

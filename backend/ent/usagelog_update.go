@@ -651,6 +651,60 @@ func (_u *UsageLogUpdate) ClearDurationMs() *UsageLogUpdate {
 	return _u
 }
 
+// SetAudioDurationMs sets the "audio_duration_ms" field.
+func (_u *UsageLogUpdate) SetAudioDurationMs(v int) *UsageLogUpdate {
+	_u.mutation.ResetAudioDurationMs()
+	_u.mutation.SetAudioDurationMs(v)
+	return _u
+}
+
+// SetNillableAudioDurationMs sets the "audio_duration_ms" field if the given value is not nil.
+func (_u *UsageLogUpdate) SetNillableAudioDurationMs(v *int) *UsageLogUpdate {
+	if v != nil {
+		_u.SetAudioDurationMs(*v)
+	}
+	return _u
+}
+
+// AddAudioDurationMs adds value to the "audio_duration_ms" field.
+func (_u *UsageLogUpdate) AddAudioDurationMs(v int) *UsageLogUpdate {
+	_u.mutation.AddAudioDurationMs(v)
+	return _u
+}
+
+// ClearAudioDurationMs clears the value of the "audio_duration_ms" field.
+func (_u *UsageLogUpdate) ClearAudioDurationMs() *UsageLogUpdate {
+	_u.mutation.ClearAudioDurationMs()
+	return _u
+}
+
+// SetHourlyPrice sets the "hourly_price" field.
+func (_u *UsageLogUpdate) SetHourlyPrice(v float64) *UsageLogUpdate {
+	_u.mutation.ResetHourlyPrice()
+	_u.mutation.SetHourlyPrice(v)
+	return _u
+}
+
+// SetNillableHourlyPrice sets the "hourly_price" field if the given value is not nil.
+func (_u *UsageLogUpdate) SetNillableHourlyPrice(v *float64) *UsageLogUpdate {
+	if v != nil {
+		_u.SetHourlyPrice(*v)
+	}
+	return _u
+}
+
+// AddHourlyPrice adds value to the "hourly_price" field.
+func (_u *UsageLogUpdate) AddHourlyPrice(v float64) *UsageLogUpdate {
+	_u.mutation.AddHourlyPrice(v)
+	return _u
+}
+
+// ClearHourlyPrice clears the value of the "hourly_price" field.
+func (_u *UsageLogUpdate) ClearHourlyPrice() *UsageLogUpdate {
+	_u.mutation.ClearHourlyPrice()
+	return _u
+}
+
 // SetFirstTokenMs sets the "first_token_ms" field.
 func (_u *UsageLogUpdate) SetFirstTokenMs(v int) *UsageLogUpdate {
 	_u.mutation.ResetFirstTokenMs()
@@ -1096,6 +1150,24 @@ func (_u *UsageLogUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	}
 	if _u.mutation.DurationMsCleared() {
 		_spec.ClearField(usagelog.FieldDurationMs, field.TypeInt)
+	}
+	if value, ok := _u.mutation.AudioDurationMs(); ok {
+		_spec.SetField(usagelog.FieldAudioDurationMs, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.AddedAudioDurationMs(); ok {
+		_spec.AddField(usagelog.FieldAudioDurationMs, field.TypeInt, value)
+	}
+	if _u.mutation.AudioDurationMsCleared() {
+		_spec.ClearField(usagelog.FieldAudioDurationMs, field.TypeInt)
+	}
+	if value, ok := _u.mutation.HourlyPrice(); ok {
+		_spec.SetField(usagelog.FieldHourlyPrice, field.TypeFloat64, value)
+	}
+	if value, ok := _u.mutation.AddedHourlyPrice(); ok {
+		_spec.AddField(usagelog.FieldHourlyPrice, field.TypeFloat64, value)
+	}
+	if _u.mutation.HourlyPriceCleared() {
+		_spec.ClearField(usagelog.FieldHourlyPrice, field.TypeFloat64)
 	}
 	if value, ok := _u.mutation.FirstTokenMs(); ok {
 		_spec.SetField(usagelog.FieldFirstTokenMs, field.TypeInt, value)
@@ -1917,6 +1989,60 @@ func (_u *UsageLogUpdateOne) ClearDurationMs() *UsageLogUpdateOne {
 	return _u
 }
 
+// SetAudioDurationMs sets the "audio_duration_ms" field.
+func (_u *UsageLogUpdateOne) SetAudioDurationMs(v int) *UsageLogUpdateOne {
+	_u.mutation.ResetAudioDurationMs()
+	_u.mutation.SetAudioDurationMs(v)
+	return _u
+}
+
+// SetNillableAudioDurationMs sets the "audio_duration_ms" field if the given value is not nil.
+func (_u *UsageLogUpdateOne) SetNillableAudioDurationMs(v *int) *UsageLogUpdateOne {
+	if v != nil {
+		_u.SetAudioDurationMs(*v)
+	}
+	return _u
+}
+
+// AddAudioDurationMs adds value to the "audio_duration_ms" field.
+func (_u *UsageLogUpdateOne) AddAudioDurationMs(v int) *UsageLogUpdateOne {
+	_u.mutation.AddAudioDurationMs(v)
+	return _u
+}
+
+// ClearAudioDurationMs clears the value of the "audio_duration_ms" field.
+func (_u *UsageLogUpdateOne) ClearAudioDurationMs() *UsageLogUpdateOne {
+	_u.mutation.ClearAudioDurationMs()
+	return _u
+}
+
+// SetHourlyPrice sets the "hourly_price" field.
+func (_u *UsageLogUpdateOne) SetHourlyPrice(v float64) *UsageLogUpdateOne {
+	_u.mutation.ResetHourlyPrice()
+	_u.mutation.SetHourlyPrice(v)
+	return _u
+}
+
+// SetNillableHourlyPrice sets the "hourly_price" field if the given value is not nil.
+func (_u *UsageLogUpdateOne) SetNillableHourlyPrice(v *float64) *UsageLogUpdateOne {
+	if v != nil {
+		_u.SetHourlyPrice(*v)
+	}
+	return _u
+}
+
+// AddHourlyPrice adds value to the "hourly_price" field.
+func (_u *UsageLogUpdateOne) AddHourlyPrice(v float64) *UsageLogUpdateOne {
+	_u.mutation.AddHourlyPrice(v)
+	return _u
+}
+
+// ClearHourlyPrice clears the value of the "hourly_price" field.
+func (_u *UsageLogUpdateOne) ClearHourlyPrice() *UsageLogUpdateOne {
+	_u.mutation.ClearHourlyPrice()
+	return _u
+}
+
 // SetFirstTokenMs sets the "first_token_ms" field.
 func (_u *UsageLogUpdateOne) SetFirstTokenMs(v int) *UsageLogUpdateOne {
 	_u.mutation.ResetFirstTokenMs()
@@ -2392,6 +2518,24 @@ func (_u *UsageLogUpdateOne) sqlSave(ctx context.Context) (_node *UsageLog, err 
 	}
 	if _u.mutation.DurationMsCleared() {
 		_spec.ClearField(usagelog.FieldDurationMs, field.TypeInt)
+	}
+	if value, ok := _u.mutation.AudioDurationMs(); ok {
+		_spec.SetField(usagelog.FieldAudioDurationMs, field.TypeInt, value)
+	}
+	if value, ok := _u.mutation.AddedAudioDurationMs(); ok {
+		_spec.AddField(usagelog.FieldAudioDurationMs, field.TypeInt, value)
+	}
+	if _u.mutation.AudioDurationMsCleared() {
+		_spec.ClearField(usagelog.FieldAudioDurationMs, field.TypeInt)
+	}
+	if value, ok := _u.mutation.HourlyPrice(); ok {
+		_spec.SetField(usagelog.FieldHourlyPrice, field.TypeFloat64, value)
+	}
+	if value, ok := _u.mutation.AddedHourlyPrice(); ok {
+		_spec.AddField(usagelog.FieldHourlyPrice, field.TypeFloat64, value)
+	}
+	if _u.mutation.HourlyPriceCleared() {
+		_spec.ClearField(usagelog.FieldHourlyPrice, field.TypeFloat64)
 	}
 	if value, ok := _u.mutation.FirstTokenMs(); ok {
 		_spec.SetField(usagelog.FieldFirstTokenMs, field.TypeInt, value)

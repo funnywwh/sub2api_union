@@ -18,6 +18,8 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+const testOpenAIAudioDuration = 30 * time.Minute
+
 func buildOpenAIAudioTranscriptionTestBody(t *testing.T, fields map[string]string) ([]byte, string) {
 	return buildOpenAIAudioTranscriptionTestBodyWithFile(t, fields, []byte("fake-audio-data"))
 }
@@ -124,6 +126,18 @@ func TestParseOpenAIAudioTranscriptionRequest(t *testing.T) {
 	require.NotEmpty(t, parsed.StickySessionSeed())
 }
 
+func TestParseOpenAIAudioTranscriptionRequestDetectsWAVDuration(t *testing.T) {
+	wav := buildPCM16WAV(90*time.Second, 16_000)
+	body, contentType := buildOpenAIAudioTranscriptionTestBodyWithFile(t, map[string]string{
+		"model": "gpt-4o-mini-transcribe",
+	}, wav)
+	c, _ := newOpenAIAudioTranscriptionTestContext(body, contentType)
+
+	parsed, err := (&OpenAIGatewayService{}).ParseOpenAIAudioTranscriptionRequest(c)
+	require.NoError(t, err)
+	require.Equal(t, 90*time.Second, parsed.AudioDuration)
+}
+
 func TestParseOpenAIAudioTranscriptionRequestRejectsMissingFile(t *testing.T) {
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
@@ -214,7 +228,7 @@ func TestForwardAudioTranscriptionOAuthUsesChatGPTBackend(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.True(t, result.ForceUsageRecord)
-	require.True(t, result.ForcePerRequestBilling)
+	require.True(t, result.ForceAudioBilling)
 	require.Equal(t, "gpt-4o-mini-transcribe", result.Model)
 	require.Equal(t, "gpt-4o-mini-transcribe", result.UpstreamModel)
 	require.Equal(t, chatgptAudioTranscriptionsURL, upstream.lastReq.URL.String())
@@ -471,7 +485,7 @@ func TestForwardAudioTranscriptionAPIKeyUsesPlatformEndpointAndParsesAudioUsage(
 	require.Equal(t, 100, result.Usage.InputTokens)
 	require.Equal(t, 80, result.Usage.AudioInputTokens)
 	require.Equal(t, 10, result.Usage.OutputTokens)
-	require.False(t, result.ForcePerRequestBilling)
+	require.False(t, result.ForceAudioBilling)
 }
 
 func TestForwardAudioTranscriptionAPIKeyPassesThroughSRT(t *testing.T) {
@@ -503,7 +517,7 @@ func TestForwardAudioTranscriptionAPIKeyPassesThroughSRT(t *testing.T) {
 
 	result, err := svc.ForwardAudioTranscription(context.Background(), c, account, parsed, "")
 	require.NoError(t, err)
-	require.True(t, result.ForcePerRequestBilling)
+	require.True(t, result.ForceAudioBilling)
 	require.Equal(t, "text/plain; charset=utf-8", recorder.Header().Get("Content-Type"))
 	require.Contains(t, recorder.Body.String(), "00:00:00,000 --> 00:00:01,000")
 }
@@ -533,7 +547,7 @@ func TestForwardAudioTranscriptionOAuthEmulatesStreamingEvents(t *testing.T) {
 	result, err := svc.ForwardAudioTranscription(context.Background(), c, account, parsed, "")
 	require.NoError(t, err)
 	require.NotNil(t, result.FirstTokenMs)
-	require.True(t, result.ForcePerRequestBilling)
+	require.True(t, result.ForceAudioBilling)
 	require.Contains(t, recorder.Header().Get("Content-Type"), "text/event-stream")
 	require.Contains(t, recorder.Body.String(), "event: transcript.text.delta")
 	require.Contains(t, recorder.Body.String(), `"delta":"streamed transcript"`)
@@ -685,10 +699,11 @@ func TestValidateOAuthAudioTranscriptionBillingUsesDefaultForTokenPricing(t *tes
 		nil,
 		"gpt-4o-mini-transcribe",
 		ChannelMappingResult{MappedModel: "gpt-4o-mini-transcribe"},
+		testOpenAIAudioDuration,
 	))
 	cost, err := svc.calculateOpenAIRecordUsageCost(
 		context.Background(),
-		&OpenAIForwardResult{ForcePerRequestBilling: true},
+		&OpenAIForwardResult{ForceAudioBilling: true, AudioDuration: testOpenAIAudioDuration},
 		apiKey,
 		"gpt-4o-mini-transcribe",
 		1,
@@ -696,9 +711,10 @@ func TestValidateOAuthAudioTranscriptionBillingUsesDefaultForTokenPricing(t *tes
 		"",
 	)
 	require.NoError(t, err)
-	require.Equal(t, string(BillingModePerRequest), cost.BillingMode)
-	require.InDelta(t, defaultAudioTranscriptionPerRequestPriceUSD, cost.TotalCost, 1e-12)
-	require.InDelta(t, defaultAudioTranscriptionPerRequestPriceUSD, cost.ActualCost, 1e-12)
+	require.Equal(t, string(BillingModePerHour), cost.BillingMode)
+	require.InDelta(t, defaultAudioTranscriptionPerHourPriceUSD, cost.HourlyPrice, 1e-12)
+	require.InDelta(t, defaultAudioTranscriptionPerHourPriceUSD*0.5, cost.TotalCost, 1e-12)
+	require.InDelta(t, defaultAudioTranscriptionPerHourPriceUSD*0.5, cost.ActualCost, 1e-12)
 }
 
 func TestValidateOAuthAudioTranscriptionBillingAcceptsPositivePerRequestPricing(t *testing.T) {
@@ -719,11 +735,11 @@ func TestValidateOAuthAudioTranscriptionBillingAcceptsPositivePerRequestPricing(
 	}
 
 	require.NoError(t, svc.ValidateOAuthAudioTranscriptionBilling(
-		context.Background(), apiKey, nil, "audio-transcribe-alias", mapping,
+		context.Background(), apiKey, nil, "audio-transcribe-alias", mapping, testOpenAIAudioDuration,
 	))
 	cost, err := svc.calculateOpenAIRecordUsageCost(
 		context.Background(),
-		&OpenAIForwardResult{ForcePerRequestBilling: true},
+		&OpenAIForwardResult{ForceAudioBilling: true, AudioDuration: testOpenAIAudioDuration},
 		apiKey,
 		"gpt-4o-mini-transcribe",
 		1,
@@ -734,6 +750,60 @@ func TestValidateOAuthAudioTranscriptionBillingAcceptsPositivePerRequestPricing(
 	require.Equal(t, string(BillingModePerRequest), cost.BillingMode)
 	require.InDelta(t, price, cost.TotalCost, 1e-12)
 	require.InDelta(t, price, cost.ActualCost, 1e-12)
+}
+
+func TestValidateOAuthAudioTranscriptionBillingAcceptsPerHourPricing(t *testing.T) {
+	hourlyPrice := 1.2
+	resolver := newOpenAIAudioTranscriptionPricingResolver(t, []ChannelModelPricing{{
+		Platform:        PlatformOpenAI,
+		Models:          []string{"gpt-4o-mini-transcribe"},
+		BillingMode:     BillingModePerHour,
+		PerRequestPrice: &hourlyPrice,
+	}})
+	svc := &OpenAIGatewayService{resolver: resolver, billingService: resolver.billingService}
+	groupID := int64(100)
+	apiKey := &APIKey{GroupID: &groupID, Group: &Group{ID: groupID}}
+	duration := 15 * time.Minute
+
+	require.NoError(t, svc.ValidateOAuthAudioTranscriptionBilling(
+		context.Background(),
+		apiKey,
+		nil,
+		"gpt-4o-mini-transcribe",
+		ChannelMappingResult{MappedModel: "gpt-4o-mini-transcribe"},
+		duration,
+	))
+	cost, err := svc.calculateOpenAIRecordUsageCost(
+		context.Background(),
+		&OpenAIForwardResult{ForceAudioBilling: true, AudioDuration: duration},
+		apiKey,
+		"gpt-4o-mini-transcribe",
+		1,
+		UsageTokens{},
+		"",
+	)
+	require.NoError(t, err)
+	require.Equal(t, string(BillingModePerHour), cost.BillingMode)
+	require.InDelta(t, hourlyPrice, cost.HourlyPrice, 1e-12)
+	require.InDelta(t, 0.3, cost.TotalCost, 1e-12)
+	require.InDelta(t, 0.3, cost.ActualCost, 1e-12)
+}
+
+func TestValidateOAuthAudioTranscriptionBillingRejectsUnknownDurationForPerHourPricing(t *testing.T) {
+	resolver := newOpenAIAudioTranscriptionPricingResolver(t, nil)
+	svc := &OpenAIGatewayService{resolver: resolver, billingService: resolver.billingService}
+	groupID := int64(100)
+	apiKey := &APIKey{GroupID: &groupID, Group: &Group{ID: groupID}}
+
+	err := svc.ValidateOAuthAudioTranscriptionBilling(
+		context.Background(),
+		apiKey,
+		nil,
+		"gpt-4o-mini-transcribe",
+		ChannelMappingResult{MappedModel: "gpt-4o-mini-transcribe"},
+		0,
+	)
+	require.ErrorContains(t, err, "audio duration could not be determined")
 }
 
 func TestValidateOAuthAudioTranscriptionBillingRefreshesStaleChannelPricing(t *testing.T) {
@@ -771,13 +841,13 @@ func TestValidateOAuthAudioTranscriptionBillingRefreshesStaleChannelPricing(t *t
 	}
 
 	require.NoError(t, svc.ValidateOAuthAudioTranscriptionBilling(
-		context.Background(), apiKey, nil, "audio-transcribe-alias", mapping,
+		context.Background(), apiKey, nil, "audio-transcribe-alias", mapping, testOpenAIAudioDuration,
 	))
 	require.Equal(t, 1, repo.listAllCallCount)
 
 	cost, err := svc.calculateOpenAIRecordUsageCost(
 		context.Background(),
-		&OpenAIForwardResult{ForcePerRequestBilling: true},
+		&OpenAIForwardResult{ForceAudioBilling: true, AudioDuration: testOpenAIAudioDuration},
 		apiKey,
 		"gpt-4o-mini-transcribe",
 		1,
@@ -814,12 +884,24 @@ func TestValidateOAuthAudioTranscriptionBillingUsesDefaultAfterRefreshMiss(t *te
 		nil,
 		"gpt-4o-mini-transcribe",
 		ChannelMappingResult{MappedModel: "gpt-4o-mini-transcribe"},
+		testOpenAIAudioDuration,
+	))
+	require.Equal(t, 1, repo.listAllCallCount)
+	// A confirmed pricing miss is negatively cached; repeated default-priced
+	// requests must not rebuild the global channel cache every five seconds.
+	require.NoError(t, svc.ValidateOAuthAudioTranscriptionBilling(
+		context.Background(),
+		apiKey,
+		nil,
+		"gpt-4o-mini-transcribe",
+		ChannelMappingResult{MappedModel: "gpt-4o-mini-transcribe"},
+		testOpenAIAudioDuration,
 	))
 	require.Equal(t, 1, repo.listAllCallCount)
 
 	cost, err := svc.calculateOpenAIRecordUsageCost(
 		context.Background(),
-		&OpenAIForwardResult{ForcePerRequestBilling: true},
+		&OpenAIForwardResult{ForceAudioBilling: true, AudioDuration: testOpenAIAudioDuration},
 		apiKey,
 		"gpt-4o-mini-transcribe",
 		1,
@@ -828,9 +910,9 @@ func TestValidateOAuthAudioTranscriptionBillingUsesDefaultAfterRefreshMiss(t *te
 	)
 	require.NoError(t, err)
 	require.Equal(t, 1, repo.listAllCallCount)
-	require.Equal(t, string(BillingModePerRequest), cost.BillingMode)
-	require.InDelta(t, defaultAudioTranscriptionPerRequestPriceUSD, cost.TotalCost, 1e-12)
-	require.InDelta(t, defaultAudioTranscriptionPerRequestPriceUSD, cost.ActualCost, 1e-12)
+	require.Equal(t, string(BillingModePerHour), cost.BillingMode)
+	require.InDelta(t, defaultAudioTranscriptionPerHourPriceUSD*0.5, cost.TotalCost, 1e-12)
+	require.InDelta(t, defaultAudioTranscriptionPerHourPriceUSD*0.5, cost.ActualCost, 1e-12)
 }
 
 func TestValidateOAuthAudioTranscriptionBillingDoesNotRefreshValidPricing(t *testing.T) {
@@ -863,6 +945,39 @@ func TestValidateOAuthAudioTranscriptionBillingDoesNotRefreshValidPricing(t *tes
 		nil,
 		"gpt-4o-mini-transcribe",
 		ChannelMappingResult{MappedModel: "gpt-4o-mini-transcribe"},
+		testOpenAIAudioDuration,
+	))
+	require.Zero(t, repo.listAllCallCount)
+}
+
+func TestValidateAudioTranscriptionBillingDoesNotRefreshValidTokenPricing(t *testing.T) {
+	inputPrice := 0.001
+	channel := newOpenAIAudioTranscriptionChannel([]ChannelModelPricing{{
+		Platform:    PlatformOpenAI,
+		Models:      []string{"gpt-4o-transcribe"},
+		BillingMode: BillingModeToken,
+		InputPrice:  &inputPrice,
+	}})
+	repo := &audioTranscriptionChannelRepository{
+		channels:       []Channel{channel},
+		groupPlatforms: map[int64]string{100: PlatformOpenAI},
+	}
+	channelService := NewChannelService(repo, nil, nil, nil)
+	storeOpenAIAudioTranscriptionChannelCache(channelService, channel)
+	billingService := NewBillingService(&config.Config{}, nil)
+	resolver := NewModelPricingResolver(channelService, billingService)
+	svc := &OpenAIGatewayService{
+		resolver:       resolver,
+		billingService: billingService,
+		channelService: channelService,
+	}
+	groupID := int64(100)
+	apiKey := &APIKey{GroupID: &groupID, Group: &Group{ID: groupID}}
+	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+
+	require.NoError(t, svc.ValidateAudioTranscriptionBilling(
+		context.Background(), apiKey, nil, account,
+		"gpt-4o-transcribe", ChannelMappingResult{MappedModel: "gpt-4o-transcribe"}, "json", testOpenAIAudioDuration,
 	))
 	require.Zero(t, repo.listAllCallCount)
 }
@@ -888,6 +1003,7 @@ func TestValidateAudioTranscriptionBillingUsesDefaultForSubscriptionWithoutChann
 		"gpt-4o-mini-transcribe",
 		ChannelMappingResult{MappedModel: "gpt-4o-mini-transcribe"},
 		"json",
+		testOpenAIAudioDuration,
 	))
 }
 
@@ -918,6 +1034,7 @@ func TestValidateAudioTranscriptionBillingAcceptsSubscriptionWithPositivePerRequ
 		"gpt-4o-mini-transcribe",
 		ChannelMappingResult{MappedModel: "gpt-4o-mini-transcribe"},
 		"json",
+		testOpenAIAudioDuration,
 	))
 }
 
@@ -936,6 +1053,7 @@ func TestValidateAudioTranscriptionBillingUsesDefaultForAPIKeyTextFormatWithoutC
 		"gpt-4o-transcribe",
 		ChannelMappingResult{MappedModel: "gpt-4o-transcribe"},
 		"srt",
+		testOpenAIAudioDuration,
 	))
 }
 
@@ -953,7 +1071,61 @@ func TestValidateAudioTranscriptionBillingAllowsAPIKeyJSONUsageModelWithTokenPri
 		"gpt-4o-transcribe",
 		ChannelMappingResult{MappedModel: "gpt-4o-transcribe"},
 		"json",
+		testOpenAIAudioDuration,
 	))
+}
+
+func TestValidateAudioTranscriptionBillingRejectsUnknownFallbackDuration(t *testing.T) {
+	resolver := newOpenAIAudioTranscriptionPricingResolver(t, nil)
+	svc := &OpenAIGatewayService{resolver: resolver, billingService: resolver.billingService}
+	groupID := int64(100)
+	apiKey := &APIKey{GroupID: &groupID, Group: &Group{ID: groupID}}
+	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+
+	err := svc.ValidateAudioTranscriptionBilling(
+		context.Background(), apiKey, nil, account,
+		"gpt-4o-transcribe", ChannelMappingResult{MappedModel: "gpt-4o-transcribe"}, "json", 0,
+	)
+	require.ErrorContains(t, err, "fallback transcription billing")
+}
+
+func TestValidateAudioTranscriptionBillingUsesPerHourForAPIKeyJSONUsageModel(t *testing.T) {
+	hourlyPrice := 1.2
+	resolver := newOpenAIAudioTranscriptionPricingResolver(t, []ChannelModelPricing{{
+		Platform:        PlatformOpenAI,
+		Models:          []string{"gpt-4o-transcribe"},
+		BillingMode:     BillingModePerHour,
+		PerRequestPrice: &hourlyPrice,
+	}})
+	svc := &OpenAIGatewayService{resolver: resolver, billingService: resolver.billingService}
+	groupID := int64(100)
+	apiKey := &APIKey{GroupID: &groupID, Group: &Group{ID: groupID}}
+	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+	duration := 15 * time.Minute
+
+	require.NoError(t, svc.ValidateAudioTranscriptionBilling(
+		context.Background(),
+		apiKey,
+		nil,
+		account,
+		"gpt-4o-transcribe",
+		ChannelMappingResult{MappedModel: "gpt-4o-transcribe"},
+		"json",
+		duration,
+	))
+	cost, err := svc.calculateOpenAIRecordUsageCost(
+		context.Background(),
+		&OpenAIForwardResult{AudioDuration: duration},
+		apiKey,
+		"gpt-4o-transcribe",
+		1,
+		UsageTokens{InputTokens: 100},
+		"",
+	)
+	require.NoError(t, err)
+	require.Equal(t, string(BillingModePerHour), cost.BillingMode)
+	require.InDelta(t, 0.3, cost.TotalCost, 1e-12)
+	require.InDelta(t, 0.3, cost.ActualCost, 1e-12)
 }
 
 func TestBillingServiceAudioInputTokenPricing(t *testing.T) {

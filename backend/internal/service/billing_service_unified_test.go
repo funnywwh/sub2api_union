@@ -181,6 +181,29 @@ func TestCalculateCostUnified_PerRequestTiersIncludeCacheCreationInContext(t *te
 	require.Equal(t, string(BillingModePerRequest), cost.BillingMode)
 }
 
+func TestCalculateCostUnified_PerHourMode(t *testing.T) {
+	bs := newTestBillingService()
+	resolver := NewModelPricingResolver(nil, bs)
+	resolved := &ResolvedPricing{
+		Mode:                   BillingModePerHour,
+		DefaultPerRequestPrice: 1.2,
+	}
+
+	cost, err := bs.CalculateCostUnified(CostInput{
+		Ctx:            context.Background(),
+		Model:          "gpt-4o-mini-transcribe",
+		AudioDuration:  15 * time.Minute,
+		RateMultiplier: 1.5,
+		Resolver:       resolver,
+		Resolved:       resolved,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, cost)
+	require.InDelta(t, 0.3, cost.TotalCost, 1e-12)
+	require.InDelta(t, 0.45, cost.ActualCost, 1e-12)
+	require.Equal(t, string(BillingModePerHour), cost.BillingMode)
+}
+
 func TestCalculateCostUnified_ImageMode(t *testing.T) {
 	cs := newTestChannelServiceWithCache(t, &channelCache{
 		pricingByGroupModel: map[channelModelKey]*ChannelModelPricing{

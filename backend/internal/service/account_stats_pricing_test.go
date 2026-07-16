@@ -190,6 +190,23 @@ func TestCalculateStatsCost_NilPricing(t *testing.T) {
 	require.Nil(t, result)
 }
 
+func TestCalculateStatsCost_PerHourReturnsNilWithoutAudioDuration(t *testing.T) {
+	result := calculateStatsCost(&ChannelModelPricing{
+		BillingMode:     BillingModePerHour,
+		PerRequestPrice: testPtrFloat64(0.2),
+	}, UsageTokens{}, 1)
+	require.Nil(t, result)
+}
+
+func TestCalculateStatsCost_PerHourUsesAudioDuration(t *testing.T) {
+	result := calculateStatsCost(&ChannelModelPricing{
+		BillingMode:     BillingModePerHour,
+		PerRequestPrice: testPtrFloat64(1.2),
+	}, UsageTokens{}, 1, 15*time.Minute)
+	require.NotNil(t, result)
+	require.InDelta(t, 0.3, *result, 1e-12)
+}
+
 func TestCalculateStatsCost_TokenBilling(t *testing.T) {
 	pricing := &ChannelModelPricing{
 		BillingMode: BillingModeToken,

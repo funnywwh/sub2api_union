@@ -210,6 +210,16 @@ func DurationMs(v int) predicate.UsageLog {
 	return predicate.UsageLog(sql.FieldEQ(FieldDurationMs, v))
 }
 
+// AudioDurationMs applies equality check predicate on the "audio_duration_ms" field. It's identical to AudioDurationMsEQ.
+func AudioDurationMs(v int) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldEQ(FieldAudioDurationMs, v))
+}
+
+// HourlyPrice applies equality check predicate on the "hourly_price" field. It's identical to HourlyPriceEQ.
+func HourlyPrice(v float64) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldEQ(FieldHourlyPrice, v))
+}
+
 // FirstTokenMs applies equality check predicate on the "first_token_ms" field. It's identical to FirstTokenMsEQ.
 func FirstTokenMs(v int) predicate.UsageLog {
 	return predicate.UsageLog(sql.FieldEQ(FieldFirstTokenMs, v))
@@ -1663,6 +1673,106 @@ func DurationMsIsNil() predicate.UsageLog {
 // DurationMsNotNil applies the NotNil predicate on the "duration_ms" field.
 func DurationMsNotNil() predicate.UsageLog {
 	return predicate.UsageLog(sql.FieldNotNull(FieldDurationMs))
+}
+
+// AudioDurationMsEQ applies the EQ predicate on the "audio_duration_ms" field.
+func AudioDurationMsEQ(v int) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldEQ(FieldAudioDurationMs, v))
+}
+
+// AudioDurationMsNEQ applies the NEQ predicate on the "audio_duration_ms" field.
+func AudioDurationMsNEQ(v int) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldNEQ(FieldAudioDurationMs, v))
+}
+
+// AudioDurationMsIn applies the In predicate on the "audio_duration_ms" field.
+func AudioDurationMsIn(vs ...int) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldIn(FieldAudioDurationMs, vs...))
+}
+
+// AudioDurationMsNotIn applies the NotIn predicate on the "audio_duration_ms" field.
+func AudioDurationMsNotIn(vs ...int) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldNotIn(FieldAudioDurationMs, vs...))
+}
+
+// AudioDurationMsGT applies the GT predicate on the "audio_duration_ms" field.
+func AudioDurationMsGT(v int) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldGT(FieldAudioDurationMs, v))
+}
+
+// AudioDurationMsGTE applies the GTE predicate on the "audio_duration_ms" field.
+func AudioDurationMsGTE(v int) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldGTE(FieldAudioDurationMs, v))
+}
+
+// AudioDurationMsLT applies the LT predicate on the "audio_duration_ms" field.
+func AudioDurationMsLT(v int) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldLT(FieldAudioDurationMs, v))
+}
+
+// AudioDurationMsLTE applies the LTE predicate on the "audio_duration_ms" field.
+func AudioDurationMsLTE(v int) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldLTE(FieldAudioDurationMs, v))
+}
+
+// AudioDurationMsIsNil applies the IsNil predicate on the "audio_duration_ms" field.
+func AudioDurationMsIsNil() predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldIsNull(FieldAudioDurationMs))
+}
+
+// AudioDurationMsNotNil applies the NotNil predicate on the "audio_duration_ms" field.
+func AudioDurationMsNotNil() predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldNotNull(FieldAudioDurationMs))
+}
+
+// HourlyPriceEQ applies the EQ predicate on the "hourly_price" field.
+func HourlyPriceEQ(v float64) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldEQ(FieldHourlyPrice, v))
+}
+
+// HourlyPriceNEQ applies the NEQ predicate on the "hourly_price" field.
+func HourlyPriceNEQ(v float64) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldNEQ(FieldHourlyPrice, v))
+}
+
+// HourlyPriceIn applies the In predicate on the "hourly_price" field.
+func HourlyPriceIn(vs ...float64) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldIn(FieldHourlyPrice, vs...))
+}
+
+// HourlyPriceNotIn applies the NotIn predicate on the "hourly_price" field.
+func HourlyPriceNotIn(vs ...float64) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldNotIn(FieldHourlyPrice, vs...))
+}
+
+// HourlyPriceGT applies the GT predicate on the "hourly_price" field.
+func HourlyPriceGT(v float64) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldGT(FieldHourlyPrice, v))
+}
+
+// HourlyPriceGTE applies the GTE predicate on the "hourly_price" field.
+func HourlyPriceGTE(v float64) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldGTE(FieldHourlyPrice, v))
+}
+
+// HourlyPriceLT applies the LT predicate on the "hourly_price" field.
+func HourlyPriceLT(v float64) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldLT(FieldHourlyPrice, v))
+}
+
+// HourlyPriceLTE applies the LTE predicate on the "hourly_price" field.
+func HourlyPriceLTE(v float64) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldLTE(FieldHourlyPrice, v))
+}
+
+// HourlyPriceIsNil applies the IsNil predicate on the "hourly_price" field.
+func HourlyPriceIsNil() predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldIsNull(FieldHourlyPrice))
+}
+
+// HourlyPriceNotNil applies the NotNil predicate on the "hourly_price" field.
+func HourlyPriceNotNil() predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldNotNull(FieldHourlyPrice))
 }
 
 // FirstTokenMsEQ applies the EQ predicate on the "first_token_ms" field.

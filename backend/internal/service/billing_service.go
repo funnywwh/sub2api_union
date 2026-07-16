@@ -6,6 +6,7 @@ import (
 
 	"log"
 	"strings"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 )
@@ -123,7 +124,8 @@ type CostBreakdown struct {
 	CacheReadCost     float64
 	TotalCost         float64
 	ActualCost        float64 // 应用倍率后的实际费用
-	BillingMode       string  // 计费模式（"token"/"per_request"/"image"），由 CalculateCostUnified 填充
+	BillingMode       string  // 计费模式（"token"/"per_request"/"per_hour"/"image"），由 CalculateCostUnified 填充
+	HourlyPrice       float64 // per_hour 模式的每小时单价快照（USD）
 }
 
 // BillingService 计费服务
@@ -479,6 +481,7 @@ type CostInput struct {
 	Tokens         UsageTokens
 	RequestCount   int    // 按次计费时使用
 	SizeTier       string // 按次/图片模式的层级标签（"1K","2K","4K","HD" 等）
+	AudioDuration  time.Duration
 	RateMultiplier float64
 	ServiceTier    string                // "priority","flex","" 等
 	Resolver       *ModelPricingResolver // 定价解析器
@@ -512,6 +515,8 @@ func (s *BillingService) CalculateCostUnified(input CostInput) (*CostBreakdown, 
 	switch resolved.Mode {
 	case BillingModePerRequest, BillingModeImage:
 		breakdown, err = s.calculatePerRequestCost(resolved, input)
+	case BillingModePerHour:
+		breakdown, err = calculateAudioTranscriptionHourlyCost(resolved.DefaultPerRequestPrice, input.AudioDuration, input.RateMultiplier)
 	default: // BillingModeToken
 		breakdown, err = s.calculateTokenCost(resolved, input)
 	}

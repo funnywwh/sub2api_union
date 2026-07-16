@@ -421,6 +421,34 @@ func (_c *UsageLogCreate) SetNillableDurationMs(v *int) *UsageLogCreate {
 	return _c
 }
 
+// SetAudioDurationMs sets the "audio_duration_ms" field.
+func (_c *UsageLogCreate) SetAudioDurationMs(v int) *UsageLogCreate {
+	_c.mutation.SetAudioDurationMs(v)
+	return _c
+}
+
+// SetNillableAudioDurationMs sets the "audio_duration_ms" field if the given value is not nil.
+func (_c *UsageLogCreate) SetNillableAudioDurationMs(v *int) *UsageLogCreate {
+	if v != nil {
+		_c.SetAudioDurationMs(*v)
+	}
+	return _c
+}
+
+// SetHourlyPrice sets the "hourly_price" field.
+func (_c *UsageLogCreate) SetHourlyPrice(v float64) *UsageLogCreate {
+	_c.mutation.SetHourlyPrice(v)
+	return _c
+}
+
+// SetNillableHourlyPrice sets the "hourly_price" field if the given value is not nil.
+func (_c *UsageLogCreate) SetNillableHourlyPrice(v *float64) *UsageLogCreate {
+	if v != nil {
+		_c.SetHourlyPrice(*v)
+	}
+	return _c
+}
+
 // SetFirstTokenMs sets the "first_token_ms" field.
 func (_c *UsageLogCreate) SetFirstTokenMs(v int) *UsageLogCreate {
 	_c.mutation.SetFirstTokenMs(v)
@@ -918,6 +946,14 @@ func (_c *UsageLogCreate) createSpec() (*UsageLog, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.DurationMs(); ok {
 		_spec.SetField(usagelog.FieldDurationMs, field.TypeInt, value)
 		_node.DurationMs = &value
+	}
+	if value, ok := _c.mutation.AudioDurationMs(); ok {
+		_spec.SetField(usagelog.FieldAudioDurationMs, field.TypeInt, value)
+		_node.AudioDurationMs = &value
+	}
+	if value, ok := _c.mutation.HourlyPrice(); ok {
+		_spec.SetField(usagelog.FieldHourlyPrice, field.TypeFloat64, value)
+		_node.HourlyPrice = &value
 	}
 	if value, ok := _c.mutation.FirstTokenMs(); ok {
 		_spec.SetField(usagelog.FieldFirstTokenMs, field.TypeInt, value)
@@ -1621,6 +1657,54 @@ func (u *UsageLogUpsert) AddDurationMs(v int) *UsageLogUpsert {
 // ClearDurationMs clears the value of the "duration_ms" field.
 func (u *UsageLogUpsert) ClearDurationMs() *UsageLogUpsert {
 	u.SetNull(usagelog.FieldDurationMs)
+	return u
+}
+
+// SetAudioDurationMs sets the "audio_duration_ms" field.
+func (u *UsageLogUpsert) SetAudioDurationMs(v int) *UsageLogUpsert {
+	u.Set(usagelog.FieldAudioDurationMs, v)
+	return u
+}
+
+// UpdateAudioDurationMs sets the "audio_duration_ms" field to the value that was provided on create.
+func (u *UsageLogUpsert) UpdateAudioDurationMs() *UsageLogUpsert {
+	u.SetExcluded(usagelog.FieldAudioDurationMs)
+	return u
+}
+
+// AddAudioDurationMs adds v to the "audio_duration_ms" field.
+func (u *UsageLogUpsert) AddAudioDurationMs(v int) *UsageLogUpsert {
+	u.Add(usagelog.FieldAudioDurationMs, v)
+	return u
+}
+
+// ClearAudioDurationMs clears the value of the "audio_duration_ms" field.
+func (u *UsageLogUpsert) ClearAudioDurationMs() *UsageLogUpsert {
+	u.SetNull(usagelog.FieldAudioDurationMs)
+	return u
+}
+
+// SetHourlyPrice sets the "hourly_price" field.
+func (u *UsageLogUpsert) SetHourlyPrice(v float64) *UsageLogUpsert {
+	u.Set(usagelog.FieldHourlyPrice, v)
+	return u
+}
+
+// UpdateHourlyPrice sets the "hourly_price" field to the value that was provided on create.
+func (u *UsageLogUpsert) UpdateHourlyPrice() *UsageLogUpsert {
+	u.SetExcluded(usagelog.FieldHourlyPrice)
+	return u
+}
+
+// AddHourlyPrice adds v to the "hourly_price" field.
+func (u *UsageLogUpsert) AddHourlyPrice(v float64) *UsageLogUpsert {
+	u.Add(usagelog.FieldHourlyPrice, v)
+	return u
+}
+
+// ClearHourlyPrice clears the value of the "hourly_price" field.
+func (u *UsageLogUpsert) ClearHourlyPrice() *UsageLogUpsert {
+	u.SetNull(usagelog.FieldHourlyPrice)
 	return u
 }
 
@@ -2404,6 +2488,62 @@ func (u *UsageLogUpsertOne) UpdateDurationMs() *UsageLogUpsertOne {
 func (u *UsageLogUpsertOne) ClearDurationMs() *UsageLogUpsertOne {
 	return u.Update(func(s *UsageLogUpsert) {
 		s.ClearDurationMs()
+	})
+}
+
+// SetAudioDurationMs sets the "audio_duration_ms" field.
+func (u *UsageLogUpsertOne) SetAudioDurationMs(v int) *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.SetAudioDurationMs(v)
+	})
+}
+
+// AddAudioDurationMs adds v to the "audio_duration_ms" field.
+func (u *UsageLogUpsertOne) AddAudioDurationMs(v int) *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.AddAudioDurationMs(v)
+	})
+}
+
+// UpdateAudioDurationMs sets the "audio_duration_ms" field to the value that was provided on create.
+func (u *UsageLogUpsertOne) UpdateAudioDurationMs() *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.UpdateAudioDurationMs()
+	})
+}
+
+// ClearAudioDurationMs clears the value of the "audio_duration_ms" field.
+func (u *UsageLogUpsertOne) ClearAudioDurationMs() *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.ClearAudioDurationMs()
+	})
+}
+
+// SetHourlyPrice sets the "hourly_price" field.
+func (u *UsageLogUpsertOne) SetHourlyPrice(v float64) *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.SetHourlyPrice(v)
+	})
+}
+
+// AddHourlyPrice adds v to the "hourly_price" field.
+func (u *UsageLogUpsertOne) AddHourlyPrice(v float64) *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.AddHourlyPrice(v)
+	})
+}
+
+// UpdateHourlyPrice sets the "hourly_price" field to the value that was provided on create.
+func (u *UsageLogUpsertOne) UpdateHourlyPrice() *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.UpdateHourlyPrice()
+	})
+}
+
+// ClearHourlyPrice clears the value of the "hourly_price" field.
+func (u *UsageLogUpsertOne) ClearHourlyPrice() *UsageLogUpsertOne {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.ClearHourlyPrice()
 	})
 }
 
@@ -3371,6 +3511,62 @@ func (u *UsageLogUpsertBulk) UpdateDurationMs() *UsageLogUpsertBulk {
 func (u *UsageLogUpsertBulk) ClearDurationMs() *UsageLogUpsertBulk {
 	return u.Update(func(s *UsageLogUpsert) {
 		s.ClearDurationMs()
+	})
+}
+
+// SetAudioDurationMs sets the "audio_duration_ms" field.
+func (u *UsageLogUpsertBulk) SetAudioDurationMs(v int) *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.SetAudioDurationMs(v)
+	})
+}
+
+// AddAudioDurationMs adds v to the "audio_duration_ms" field.
+func (u *UsageLogUpsertBulk) AddAudioDurationMs(v int) *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.AddAudioDurationMs(v)
+	})
+}
+
+// UpdateAudioDurationMs sets the "audio_duration_ms" field to the value that was provided on create.
+func (u *UsageLogUpsertBulk) UpdateAudioDurationMs() *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.UpdateAudioDurationMs()
+	})
+}
+
+// ClearAudioDurationMs clears the value of the "audio_duration_ms" field.
+func (u *UsageLogUpsertBulk) ClearAudioDurationMs() *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.ClearAudioDurationMs()
+	})
+}
+
+// SetHourlyPrice sets the "hourly_price" field.
+func (u *UsageLogUpsertBulk) SetHourlyPrice(v float64) *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.SetHourlyPrice(v)
+	})
+}
+
+// AddHourlyPrice adds v to the "hourly_price" field.
+func (u *UsageLogUpsertBulk) AddHourlyPrice(v float64) *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.AddHourlyPrice(v)
+	})
+}
+
+// UpdateHourlyPrice sets the "hourly_price" field to the value that was provided on create.
+func (u *UsageLogUpsertBulk) UpdateHourlyPrice() *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.UpdateHourlyPrice()
+	})
+}
+
+// ClearHourlyPrice clears the value of the "hourly_price" field.
+func (u *UsageLogUpsertBulk) ClearHourlyPrice() *UsageLogUpsertBulk {
+	return u.Update(func(s *UsageLogUpsert) {
+		s.ClearHourlyPrice()
 	})
 }
 

@@ -458,10 +458,18 @@
                 <span class="font-medium text-violet-300">{{ formatTokenPricePerMillion(tooltipData.output_cost, tooltipData.output_tokens) }} {{ t('usage.perMillionTokens') }}</span>
               </div>
             </template>
-            <!-- Per-request / image billing: show unit price -->
+            <!-- Request, duration, or image billing: show this request's base charge -->
             <div v-else class="flex items-center justify-between gap-4">
-              <span class="text-gray-400">{{ tooltipData.billing_mode === 'image' ? t('usage.imageUnitPrice') : t('usage.unitPrice') }}</span>
+              <span class="text-gray-400">{{ tooltipData.billing_mode === 'image' ? t('usage.imageUnitPrice') : tooltipData.billing_mode === BILLING_MODE_PER_HOUR ? t('usage.durationCharge') : t('usage.unitPrice') }}</span>
               <span class="font-medium text-sky-300">${{ tooltipData.total_cost?.toFixed(6) || '0.000000' }}</span>
+            </div>
+            <div v-if="tooltipData?.billing_mode === BILLING_MODE_PER_HOUR && tooltipData.audio_duration_ms != null" class="flex items-center justify-between gap-4">
+              <span class="text-gray-400">{{ t('usage.audioDuration') }}</span>
+              <span class="font-medium text-white">{{ formatDuration(tooltipData.audio_duration_ms) }}</span>
+            </div>
+            <div v-if="tooltipData?.billing_mode === BILLING_MODE_PER_HOUR && tooltipData.hourly_price != null" class="flex items-center justify-between gap-4">
+              <span class="text-gray-400">{{ t('usage.hourlyUnitPrice') }}</span>
+              <span class="font-medium text-white">${{ tooltipData.hourly_price.toFixed(6) }}</span>
             </div>
             <div v-if="tooltipData && tooltipData.cache_creation_cost > 0" class="flex items-center justify-between gap-4">
               <span class="text-gray-400">{{ t('admin.usage.cacheCreationCost') }}</span>
@@ -524,7 +532,7 @@ import { formatCacheTokens, formatMultiplier } from '@/utils/formatters'
 import { formatTokenPricePerMillion } from '@/utils/usagePricing'
 import { getUsageServiceTierLabel } from '@/utils/usageServiceTier'
 import { resolveUsageRequestType } from '@/utils/usageRequestType'
-import { getBillingModeLabel, getBillingModeBadgeClass } from '@/utils/billingMode'
+import { getBillingModeLabel, getBillingModeBadgeClass, BILLING_MODE_PER_HOUR } from '@/utils/billingMode'
 
 const { t } = useI18n()
 const appStore = useAppStore()

@@ -189,6 +189,21 @@
           </div>
         </div>
 
+        <!-- Per-hour audio mode -->
+        <div v-else-if="entry.billing_mode === 'per_hour'">
+          <label class="mt-3 block text-xs font-medium text-gray-500 dark:text-gray-400">
+            {{ t('admin.channels.form.hourlyPrice', '每小时价格') }}
+            <span class="ml-1 font-normal text-gray-400">$/小时</span>
+          </label>
+          <div class="mt-1 w-48">
+            <input :value="entry.per_request_price" @input="emitField('per_request_price', ($event.target as HTMLInputElement).value)"
+              type="number" step="any" min="0" class="input text-sm" placeholder="0.2" />
+          </div>
+          <p class="mt-2 text-xs text-gray-400">
+            {{ t('admin.channels.form.hourlyPriceHint', '按上传音频的实际时长精确折算，不足一小时不会按整小时收费。') }}
+          </p>
+        </div>
+
         <!-- Image mode -->
         <div v-else-if="entry.billing_mode === 'image'">
           <!-- Default image price (per-request, same as per_request mode) -->
@@ -253,11 +268,24 @@ const emit = defineEmits<{
 // Collapse state: entries with existing models default to collapsed
 const collapsed = ref(props.entry.models.length > 0)
 
-const billingModeOptions = computed(() => [
-  { value: 'token', label: 'Token' },
-  { value: 'per_request', label: t('admin.channels.billingMode.perRequest', '按次') },
-  { value: 'image', label: t('admin.channels.billingMode.image', '图片（按次）') }
-])
+const billingModeOptions = computed(() => {
+  const options = [
+    { value: 'token', label: 'Token' },
+    { value: 'per_request', label: t('admin.channels.billingMode.perRequest', '按次') }
+  ]
+  if (props.entry.billing_mode === 'per_hour' || (props.entry.models.length > 0 && props.entry.models.every(isAudioTranscriptionBillingModel))) {
+    options.push({ value: 'per_hour', label: t('admin.channels.billingMode.perHour', '按小时') })
+  }
+  options.push({ value: 'image', label: t('admin.channels.billingMode.image', '图片（按次）') })
+  return options
+})
+
+function isAudioTranscriptionBillingModel(model: string): boolean {
+  const value = model.trim().toLowerCase()
+  if (!value) return false
+  if (value.includes('transcrib') || value.includes('whisper') || value.includes('speech-to-text')) return true
+  return value.replace(/[_.\/:]/g, '-').split('-').some(part => part === 'asr' || part === 'stt')
+}
 
 const billingModeLabel = computed(() => {
   const opt = billingModeOptions.value.find(o => o.value === props.entry.billing_mode)

@@ -76,6 +76,10 @@ const (
 	FieldStream = "stream"
 	// FieldDurationMs holds the string denoting the duration_ms field in the database.
 	FieldDurationMs = "duration_ms"
+	// FieldAudioDurationMs holds the string denoting the audio_duration_ms field in the database.
+	FieldAudioDurationMs = "audio_duration_ms"
+	// FieldHourlyPrice holds the string denoting the hourly_price field in the database.
+	FieldHourlyPrice = "hourly_price"
 	// FieldFirstTokenMs holds the string denoting the first_token_ms field in the database.
 	FieldFirstTokenMs = "first_token_ms"
 	// FieldUserAgent holds the string denoting the user_agent field in the database.
@@ -173,6 +177,8 @@ var Columns = []string{
 	FieldBillingType,
 	FieldStream,
 	FieldDurationMs,
+	FieldAudioDurationMs,
+	FieldHourlyPrice,
 	FieldFirstTokenMs,
 	FieldUserAgent,
 	FieldIPAddress,
@@ -414,6 +420,16 @@ func ByStream(opts ...sql.OrderTermOption) OrderOption {
 // ByDurationMs orders the results by the duration_ms field.
 func ByDurationMs(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldDurationMs, opts...).ToFunc()
+}
+
+// ByAudioDurationMs orders the results by the audio_duration_ms field.
+func ByAudioDurationMs(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldAudioDurationMs, opts...).ToFunc()
+}
+
+// ByHourlyPrice orders the results by the hourly_price field.
+func ByHourlyPrice(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldHourlyPrice, opts...).ToFunc()
 }
 
 // ByFirstTokenMs orders the results by the first_token_ms field.

@@ -932,6 +932,9 @@ export default {
     perMillionTokens: '/ 1M Token',
     unitPrice: '单次价格',
     imageUnitPrice: '单张价格',
+    durationCharge: '本次时长费用',
+    audioDuration: '音频时长',
+    hourlyUnitPrice: '每小时单价',
     cacheRead: '读取',
     cacheWrite: '写入',
     serviceTier: '服务档位',
@@ -1052,6 +1055,7 @@ export default {
       billingMode: '计费模式',
       billingModeToken: '按 Token',
       billingModePerRequest: '按次',
+      billingModePerHour: '按小时',
       billingModeImage: '按图片',
       inputPrice: '输入',
       outputPrice: '输出',
@@ -1059,9 +1063,11 @@ export default {
       cacheReadPrice: '缓存读取',
       imageOutputPrice: '图片输出',
       perRequestPrice: '每次请求',
+      hourlyPrice: '每小时价格',
       intervals: '阶梯定价',
       unitPerMillion: '/ 1M token',
-      unitPerRequest: '/ 次'
+      unitPerRequest: '/ 次',
+      unitPerHour: '/ 小时'
     }
   },
 
@@ -2331,6 +2337,7 @@ export default {
         billingMode: '计费模式',
         billingModeToken: '按 Token',
         billingModePerRequest: '按次',
+        billingModePerHour: '按小时',
         billingModeImage: '按图片',
         inputPrice: '输入',
         outputPrice: '输出',
@@ -2338,9 +2345,11 @@ export default {
         cacheReadPrice: '缓存读取',
         imageOutputPrice: '图片输出',
         perRequestPrice: '每次请求',
+        hourlyPrice: '每小时价格',
         intervals: '阶梯定价',
         unitPerMillion: '/ 1M token',
-        unitPerRequest: '/ 次'
+        unitPerRequest: '/ 次',
+        unitPerHour: '/ 小时'
       }
     },
 
@@ -2383,6 +2392,7 @@ export default {
       billingMode: {
         token: 'Token',
         perRequest: '按次',
+        perHour: '按小时',
         image: '图片（按次）'
       },
       form: {
@@ -2416,6 +2426,10 @@ export default {
         noPricingRules: '暂无定价规则，点击"添加"创建',
         perRequestPrice: '单次价格',
         perRequestPriceRequired: '按次/图片计费模式必须设置默认价格或至少一个计费层级',
+        hourlyPrice: '每小时价格',
+        hourlyPriceHint: '按上传音频的实际时长精确折算，不足一小时不会按整小时收费。',
+        hourlyPriceRequired: '按小时计费模式必须设置大于 0 的每小时价格',
+        hourlyModelRequired: '按小时计费仅支持语音转写模型',
         tierLabel: '层级',
         resolution: '分辨率',
         modelMapping: '模型映射',
@@ -4241,6 +4255,7 @@ export default {
       billingMode: '计费模式',
       billingModeToken: '按量',
       billingModePerRequest: '按次',
+      billingModePerHour: '按小时',
       billingModeImage: '按次(图片)',
       allBillingModes: '全部计费模式',
       ipAddress: 'IP',

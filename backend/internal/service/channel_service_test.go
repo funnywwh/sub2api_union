@@ -2276,6 +2276,39 @@ func TestValidatePricingBillingMode(t *testing.T) {
 			}},
 		},
 		{
+			name: "per_hour with positive hourly price - valid",
+			pricing: []ChannelModelPricing{{
+				Models:          []string{"gpt-4o-mini-transcribe"},
+				BillingMode:     BillingModePerHour,
+				PerRequestPrice: testPtrFloat64(0.2),
+			}},
+		},
+		{
+			name: "per_hour with chat model - invalid",
+			pricing: []ChannelModelPricing{{
+				Models:          []string{"gpt-5.6-sol"},
+				BillingMode:     BillingModePerHour,
+				PerRequestPrice: testPtrFloat64(0.2),
+			}},
+			wantErr: true,
+			errMsg:  "only supported for audio transcription models",
+		},
+		{
+			name:    "per_hour without hourly price - invalid",
+			pricing: []ChannelModelPricing{{BillingMode: BillingModePerHour}},
+			wantErr: true,
+			errMsg:  "positive hourly price required",
+		},
+		{
+			name: "per_hour with zero hourly price - invalid",
+			pricing: []ChannelModelPricing{{
+				BillingMode:     BillingModePerHour,
+				PerRequestPrice: testPtrFloat64(0),
+			}},
+			wantErr: true,
+			errMsg:  "positive hourly price required",
+		},
+		{
 			name:    "per_request no price no intervals - invalid",
 			pricing: []ChannelModelPricing{{BillingMode: BillingModePerRequest}},
 			wantErr: true,

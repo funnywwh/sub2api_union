@@ -112,6 +112,17 @@
 
             <PricingRow
               v-if="
+                model.pricing.billing_mode === BILLING_MODE_PER_HOUR &&
+                model.pricing.per_request_price != null
+              "
+              :label="t(prefixKey('hourlyPrice'), '每小时价格')"
+              :value="model.pricing.per_request_price"
+              :unit="t(prefixKey('unitPerHour'), '/小时')"
+              :scale="1"
+            />
+
+            <PricingRow
+              v-if="
                 model.pricing.billing_mode === BILLING_MODE_IMAGE &&
                 model.pricing.image_output_price != null
               "
@@ -158,6 +169,7 @@ import { formatScaled } from '@/utils/pricing'
 import {
   BILLING_MODE_TOKEN,
   BILLING_MODE_PER_REQUEST,
+  BILLING_MODE_PER_HOUR,
   BILLING_MODE_IMAGE,
   type BillingMode
 } from '@/constants/channel'
@@ -220,6 +232,8 @@ const billingModeLabel = computed(() => {
       return t(prefixKey('billingModeToken'))
     case BILLING_MODE_PER_REQUEST:
       return t(prefixKey('billingModePerRequest'))
+    case BILLING_MODE_PER_HOUR:
+      return t(prefixKey('billingModePerHour'), '按小时')
     case BILLING_MODE_IMAGE:
       return t(prefixKey('billingModeImage'))
     default:
@@ -233,7 +247,7 @@ function formatRange(min: number, max: number | null): string {
 }
 
 function formatInterval(iv: UserPricingInterval, mode: BillingMode): string {
-  if (mode === BILLING_MODE_PER_REQUEST || mode === BILLING_MODE_IMAGE) {
+  if (mode === BILLING_MODE_PER_REQUEST || mode === BILLING_MODE_PER_HOUR || mode === BILLING_MODE_IMAGE) {
     return formatScaled(iv.per_request_price, 1)
   }
   const input = formatScaled(iv.input_price, perMillionScale)
