@@ -1252,13 +1252,27 @@ func openAICompactSupportTier(account *Account) int {
 	return 0
 }
 
+// isOpenAIModelSupportedForRequest checks account-level model support while
+// allowing passthrough accounts to forward models that are not locally mapped.
+func isOpenAIModelSupportedForRequest(account *Account, requestedModel string) bool {
+	if account == nil {
+		return false
+	}
+	// Passthrough only replaces authentication and forwards the requested model
+	// unchanged, so account-level model mappings must not act as an allowlist.
+	if requestedModel == "" || account.IsOpenAIPassthroughEnabled() {
+		return true
+	}
+	return account.IsModelSupported(requestedModel)
+}
+
 // isOpenAIAccountEligibleForRequest centralises the schedulable / OpenAI / model /
 // compact-support checks used during account selection.
 func isOpenAIAccountEligibleForRequest(account *Account, requestedModel string, requireCompact bool) bool {
 	if account == nil || !account.IsSchedulable() || !account.IsOpenAI() {
 		return false
 	}
-	if requestedModel != "" && !account.IsModelSupported(requestedModel) {
+	if !isOpenAIModelSupportedForRequest(account, requestedModel) {
 		return false
 	}
 	if requireCompact && openAICompactSupportTier(account) == 0 {
@@ -1621,7 +1635,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 		if !acc.IsSchedulable() {
 			continue
 		}
-		if requestedModel != "" && !acc.IsModelSupported(requestedModel) {
+		if !isOpenAIModelSupportedForRequest(acc, requestedModel) {
 			continue
 		}
 		if needsUpstreamCheck && s.isUpstreamModelRestrictedByChannel(ctx, *groupID, acc, requestedModel, requireCompact) {
