@@ -123,6 +123,42 @@ func TestGetModelPricing_UnknownOpenAIModelReturnsError(t *testing.T) {
 	require.Contains(t, err.Error(), "pricing not found")
 }
 
+func TestGetModelPricing_TextEmbedding3LargeFallback(t *testing.T) {
+	svc := newTestBillingService()
+
+	pricing := svc.getFallbackPricing("  Text-Embedding-3-Large  ")
+	require.NotNil(t, pricing)
+	require.InDelta(t, 0.13e-6, pricing.InputPricePerToken, 1e-12)
+	require.Zero(t, pricing.AudioInputPricePerToken)
+	require.Zero(t, pricing.AudioInputPricePerTokenPriority)
+	require.Zero(t, pricing.InputPricePerTokenPriority)
+	require.Zero(t, pricing.OutputPricePerToken)
+	require.Zero(t, pricing.OutputPricePerTokenPriority)
+	require.Zero(t, pricing.CacheCreationPricePerToken)
+	require.Zero(t, pricing.CacheCreationPricePerTokenPriority)
+	require.Zero(t, pricing.CacheReadPricePerToken)
+	require.Zero(t, pricing.CacheReadPricePerTokenPriority)
+	require.Zero(t, pricing.CacheCreation5mPrice)
+	require.Zero(t, pricing.CacheCreation1hPrice)
+	require.Zero(t, pricing.ImageOutputPricePerToken)
+
+	require.Nil(t, svc.getFallbackPricing("text-embedding-3-large-preview"))
+	require.Nil(t, svc.getFallbackPricing("prefix-text-embedding-3-large"))
+}
+
+func TestCalculateCost_TextEmbedding3LargeOneMillionInputTokens(t *testing.T) {
+	svc := newTestBillingService()
+
+	cost, err := svc.CalculateCost("text-embedding-3-large", UsageTokens{InputTokens: 1_000_000}, 1.0)
+	require.NoError(t, err)
+	require.InDelta(t, 0.13, cost.InputCost, 1e-12)
+	require.Zero(t, cost.OutputCost)
+	require.Zero(t, cost.CacheCreationCost)
+	require.Zero(t, cost.CacheReadCost)
+	require.InDelta(t, 0.13, cost.TotalCost, 1e-12)
+	require.InDelta(t, 0.13, cost.ActualCost, 1e-12)
+}
+
 func TestGetModelPricing_OpenAIGPT54Fallback(t *testing.T) {
 	svc := newTestBillingService()
 

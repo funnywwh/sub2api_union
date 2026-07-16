@@ -152,6 +152,11 @@ func NewBillingService(cfg *config.Config, pricingService *PricingService) *Bill
 // initFallbackPricing 初始化硬编码回退价格（当动态价格不可用时使用）
 // 价格单位：USD per token（与LiteLLM格式一致）
 func (s *BillingService) initFallbackPricing() {
+	// OpenAI text-embedding-3-large
+	s.fallbackPrices["text-embedding-3-large"] = &ModelPricing{
+		InputPricePerToken: 0.13e-6, // $0.13 per MTok
+	}
+
 	// Claude 4.5 Opus
 	s.fallbackPrices["claude-opus-4.5"] = &ModelPricing{
 		InputPricePerToken:         5e-6,    // $5 per MTok
@@ -326,7 +331,13 @@ func (s *BillingService) initFallbackPricing() {
 
 // getFallbackPricing 根据模型系列获取回退价格
 func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
-	modelLower := strings.ToLower(model)
+	modelLower := strings.ToLower(strings.TrimSpace(model))
+
+	// Embedding pricing must match the canonical model name exactly. In
+	// particular, do not apply it to similarly named or version-suffixed models.
+	if modelLower == "text-embedding-3-large" {
+		return s.fallbackPrices["text-embedding-3-large"]
+	}
 
 	// 按模型系列匹配
 	if strings.Contains(modelLower, "opus") {
