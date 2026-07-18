@@ -39,8 +39,8 @@ func TestOpenAIGatewayService_ToolCorrection(t *testing.T) {
 					"function": {"name": "update_plan"}
 				}]
 			}`),
-			expected: "todowrite",
-			changed:  true,
+			expected: "update_plan",
+			changed:  false,
 		},
 		{
 			name: "no change for correct tool name",
@@ -127,7 +127,7 @@ func TestToolCorrectionStats(t *testing.T) {
 		t.Errorf("expected 2 apply_patch->edit corrections, got %d", stats.CorrectionsByTool["apply_patch->edit"])
 	}
 
-	if stats.CorrectionsByTool["update_plan->todowrite"] != 1 {
-		t.Errorf("expected 1 update_plan->todowrite correction, got %d", stats.CorrectionsByTool["update_plan->todowrite"])
+	if stats.CorrectionsByTool["update_plan->todowrite"] != 0 {
+		t.Errorf("update_plan should not be remapped to todowrite, got %d", stats.CorrectionsByTool["update_plan->todowrite"])
 	}
 }

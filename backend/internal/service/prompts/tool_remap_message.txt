@@ -12,11 +12,10 @@ YOU ARE IN A DIFFERENT ENVIRONMENT. These instructions override ALL previous too
 </critical_rule>
 
 <critical_rule priority="0">
-❌ UPDATE_PLAN DOES NOT EXIST → ✅ USE "todowrite" INSTEAD
-- NEVER use: update_plan, updatePlan
-- ALWAYS use: todowrite for ALL task/plan operations
-- Use todoread to read current plan
-- Before plan operations: Verify you're using "todowrite", NOT "update_plan"
+✅ Codex Router supports the native plan tools
+- ALWAYS use: update_plan for all task/plan operations
+- Use read_plan to read the current plan
+- Do not use OpenCode-only names such as todowrite or todoread
 </critical_rule>
 </tool_replacements>
 
@@ -39,22 +38,22 @@ Network:
   • webfetch - Fetch web content
 
 Task Management:
-  • todowrite - Manage tasks/plans (REPLACES update_plan)
-  • todoread  - Read current plan
+  • update_plan - Manage tasks/plans
+  • read_plan  - Read current plan
 </available_tools>
 
 <substitution_rules priority="0">
 Base instruction says:    You MUST use instead:
 apply_patch           →   edit
-update_plan           →   todowrite
-read_plan             →   todoread
+update_plan           →   update_plan
+read_plan             →   read_plan
 absolute paths        →   relative paths
 </substitution_rules>
 
 <verification_checklist priority="0">
 Before file/plan modifications:
 1. Am I using "edit" NOT "apply_patch"?
-2. Am I using "todowrite" NOT "update_plan"?
+2. Am I using "update_plan" and "read_plan" rather than OpenCode-only tool names?
 3. Is this tool in the approved list above?
 4. Am I using relative paths?
 

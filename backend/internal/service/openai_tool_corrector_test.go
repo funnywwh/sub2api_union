@@ -80,8 +80,8 @@ func TestCorrectToolCallsInSSEData(t *testing.T) {
 				if !ok {
 					t.Fatal("Invalid function_call format")
 				}
-				if functionCall["name"] != "todowrite" {
-					t.Errorf("Expected tool name 'todowrite', got '%v'", functionCall["name"])
+				if functionCall["name"] != "update_plan" {
+					t.Errorf("Expected tool name 'update_plan', got '%v'", functionCall["name"])
 				}
 			},
 		},
@@ -310,10 +310,10 @@ func TestCorrectToolName(t *testing.T) {
 	}{
 		{"apply_patch", "edit", true},
 		{"applyPatch", "edit", true},
-		{"update_plan", "todowrite", true},
-		{"updatePlan", "todowrite", true},
-		{"read_plan", "todoread", true},
-		{"readPlan", "todoread", true},
+		{"update_plan", "update_plan", false},
+		{"updatePlan", "update_plan", true},
+		{"read_plan", "read_plan", false},
+		{"readPlan", "read_plan", true},
 		{"search_files", "grep", true},
 		{"searchFiles", "grep", true},
 		{"list_files", "glob", true},
@@ -351,8 +351,8 @@ func TestGetToolNameMapping(t *testing.T) {
 
 	expectedMappings := map[string]string{
 		"apply_patch":  "edit",
-		"update_plan":  "todowrite",
-		"read_plan":    "todoread",
+		"updatePlan":   "update_plan",
+		"readPlan":     "read_plan",
 		"search_files": "grep",
 		"list_files":   "glob",
 	}
@@ -394,8 +394,8 @@ func TestCorrectorStats(t *testing.T) {
 		t.Errorf("Expected apply_patch->edit count=2, got %d", stats.CorrectionsByTool["apply_patch->edit"])
 	}
 
-	if stats.CorrectionsByTool["update_plan->todowrite"] != 1 {
-		t.Errorf("Expected update_plan->todowrite count=1, got %d", stats.CorrectionsByTool["update_plan->todowrite"])
+	if stats.CorrectionsByTool["update_plan->todowrite"] != 0 {
+		t.Errorf("Expected no update_plan->todowrite correction, got %d", stats.CorrectionsByTool["update_plan->todowrite"])
 	}
 
 	corrector.ResetStats()

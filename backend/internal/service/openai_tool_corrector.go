@@ -12,14 +12,12 @@ import (
 	"github.com/tidwall/sjson"
 )
 
-// codexToolNameMapping 定义 Codex 原生工具名称到 OpenCode 工具名称的映射
+// codexToolNameMapping 定义兼容别名到 Codex Router 原生工具名称的映射。
 var codexToolNameMapping = map[string]string{
 	"apply_patch":  "edit",
 	"applyPatch":   "edit",
-	"update_plan":  "todowrite",
-	"updatePlan":   "todowrite",
-	"read_plan":    "todoread",
-	"readPlan":     "todoread",
+	"updatePlan":   "update_plan",
+	"readPlan":     "read_plan",
 	"search_files": "grep",
 	"searchFiles":  "grep",
 	"list_files":   "glob",
