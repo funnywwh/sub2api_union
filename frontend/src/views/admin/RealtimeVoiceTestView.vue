@@ -290,6 +290,8 @@ let nextTranscriptId = 1
 let nextEventId = 1
 let activeAssistantTranscriptId: number | null = null
 let activeUserTranscriptId: number | null = null
+const liveCaptionTranscriptIds = new Map<string, number>()
+const privateUserTranscriptIds = new Map<string, number>()
 let lastStatsSignature = ''
 
 const clientDeviceId = createIdempotencyKey()
@@ -310,8 +312,21 @@ const statusDotClass = computed(() => {
   return 'bg-gray-400'
 })
 
+function normalizeVoiceLocale(value: string): string {
+  const locale = value.trim()
+  if (!locale) return 'en-US'
+  return locale.toLowerCase() === 'zh' ? 'zh-CN' : locale
+}
+
+function resolveVoiceLocale(): string {
+  const pageLocale = document.documentElement.lang
+  const browserLocale = navigator.language
+  return normalizeVoiceLocale(pageLocale || browserLocale || 'en-US')
+}
+
 function buildSessionTemplate(selectedMode: VoiceMode): Record<string, unknown> {
   const advanced = selectedMode === 'vp'
+  const locale = resolveVoiceLocale()
   const template: Record<string, unknown> = {
     voice_mode: advanced ? 'advanced' : selectedMode === 'vps' ? 'standard' : 'wingman',
     voice: 'alloy',
@@ -322,7 +337,9 @@ function buildSessionTemplate(selectedMode: VoiceMode): Record<string, unknown> 
     history_and_training_disabled: false,
     chat_mode: 'chat',
     model_speaks_first: false,
-    enable_message_streaming: advanced
+    enable_message_streaming: advanced,
+    language_code: locale,
+    user_locale: locale
   }
   if (selectedMode === 'wm') template.session_type = 'wingman'
   return template
@@ -333,7 +350,7 @@ function prepareSessionPayload(input: Record<string, unknown>): Record<string, u
   const requestedModel = typeof input.requested_default_model === 'string' && input.requested_default_model.trim()
     ? input.requested_default_model.trim()
     : 'gpt-4o'
-  const locale = navigator.language || 'en-US'
+  const locale = resolveVoiceLocale()
   const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
   return {
     ...input,
@@ -416,8 +433,94 @@ function finalizeTranscript(role: 'user' | 'assistant', transcript?: string): vo
   else activeUserTranscriptId = null
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function upsertMappedTranscript(
+  transcriptIds: Map<string, number>,
+  key: string,
+  role: 'user' | 'assistant',
+  text: string
+): void {
+  const trimmed = text.trim()
+  if (!trimmed) return
+
+  const existingId = transcriptIds.get(key)
+  const existing = existingId === undefined
+    ? undefined
+    : transcripts.value.find(item => item.id === existingId)
+  if (existing) {
+    existing.text = trimmed
+    return
+  }
+
+  const id = addTranscript(role, trimmed)
+  if (id !== null) transcriptIds.set(key, id)
+}
+
+function collectInputAudioTranscriptions(value: unknown, output: string[], depth = 0): void {
+  if (depth > 12) return
+  if (Array.isArray(value)) {
+    value.forEach(item => collectInputAudioTranscriptions(item, output, depth + 1))
+    return
+  }
+  if (!isRecord(value)) return
+
+  if (
+    value.content_type === 'audio_transcription'
+    && value.direction === 'in'
+    && typeof value.text === 'string'
+  ) {
+    output.push(value.text)
+  }
+  Object.values(value).forEach(item => collectInputAudioTranscriptions(item, output, depth + 1))
+}
+
+function processChatGptRealtimeEvent(payload: Record<string, unknown>): void {
+  const type = typeof payload.type === 'string' ? payload.type : ''
+  const body = isRecord(payload.payload) ? payload.payload : payload
+
+  if (type === 'live_captioning_text') {
+    const text = typeof body.text === 'string' ? body.text : ''
+    const chunkId = typeof body.chunk_id === 'string' && body.chunk_id
+      ? body.chunk_id
+      : `caption:${text}`
+    upsertMappedTranscript(liveCaptionTranscriptIds, chunkId, 'assistant', text)
+    return
+  }
+
+  if (type !== 'chat_message_delta' || !isRecord(body.delta)) return
+
+  const inputTranscriptions: string[] = []
+  collectInputAudioTranscriptions(body.delta, inputTranscriptions)
+  const cursor = typeof body.delta.c === 'string' || typeof body.delta.c === 'number'
+    ? String(body.delta.c)
+    : null
+  inputTranscriptions.forEach((text, index) => {
+    const key = cursor === null ? `text:${text}:${index}` : `cursor:${cursor}:${index}`
+    upsertMappedTranscript(privateUserTranscriptIds, key, 'user', text)
+  })
+}
+
 function processRealtimeEvent(payload: Record<string, unknown>): void {
   const type = typeof payload.type === 'string' ? payload.type : 'message'
+
+  if (type === 'data_message') {
+    const nested = payload.data
+    if (isRecord(nested)) processRealtimeEvent(nested)
+    else if (typeof nested === 'string') {
+      try {
+        const parsed = JSON.parse(nested) as unknown
+        if (isRecord(parsed)) processRealtimeEvent(parsed)
+      } catch {
+        // The outer data_message is already retained in the event log for diagnostics.
+      }
+    }
+    return
+  }
+
+  processChatGptRealtimeEvent(payload)
   const delta = typeof payload.delta === 'string' ? payload.delta : ''
   const transcript = typeof payload.transcript === 'string' ? payload.transcript : ''
 
@@ -616,6 +719,8 @@ function cleanupSession(preservePeerStates = false): void {
   microphoneMuted.value = false
   activeAssistantTranscriptId = null
   activeUserTranscriptId = null
+  liveCaptionTranscriptIds.clear()
+  privateUserTranscriptIds.clear()
   stopElapsedTimer()
   if (!preservePeerStates) resetPeerStates()
 }
@@ -854,6 +959,8 @@ function clearResults(): void {
   eventLogs.value = []
   activeAssistantTranscriptId = null
   activeUserTranscriptId = null
+  liveCaptionTranscriptIds.clear()
+  privateUserTranscriptIds.clear()
 }
 
 onBeforeUnmount(() => cleanupSession())
