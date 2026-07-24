@@ -311,13 +311,49 @@ const statusDotClass = computed(() => {
 })
 
 function buildSessionTemplate(selectedMode: VoiceMode): Record<string, unknown> {
+  const advanced = selectedMode === 'vp'
   const template: Record<string, unknown> = {
-    voice_mode: selectedMode === 'vp' ? 'advanced' : selectedMode === 'vps' ? 'standard' : 'wingman',
+    voice_mode: advanced ? 'advanced' : selectedMode === 'vps' ? 'standard' : 'wingman',
     voice: 'alloy',
-    requested_default_model: 'gpt-4o-realtime'
+    requested_default_model: 'gpt-4o',
+    model_slug: 'gpt-4o',
+    conversation_mode: { kind: 'primary_assistant' },
+    client_tools: [],
+    history_and_training_disabled: false,
+    chat_mode: 'chat',
+    model_speaks_first: false,
+    enable_message_streaming: advanced
   }
   if (selectedMode === 'wm') template.session_type = 'wingman'
   return template
+}
+
+function prepareSessionPayload(input: Record<string, unknown>): Record<string, unknown> {
+  const voiceSessionId = createIdempotencyKey()
+  const requestedModel = typeof input.requested_default_model === 'string' && input.requested_default_model.trim()
+    ? input.requested_default_model.trim()
+    : 'gpt-4o'
+  const locale = navigator.language || 'en-US'
+  const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
+  return {
+    ...input,
+    requested_default_model: requestedModel,
+    model_slug: typeof input.model_slug === 'string' && input.model_slug.trim()
+      ? input.model_slug.trim()
+      : requestedModel,
+    conversation_mode: input.conversation_mode ?? { kind: 'primary_assistant' },
+    client_tools: input.client_tools ?? [],
+    history_and_training_disabled: input.history_and_training_disabled ?? false,
+    chat_mode: input.chat_mode ?? 'chat',
+    model_speaks_first: input.model_speaks_first ?? false,
+    enable_message_streaming: input.enable_message_streaming ?? mode.value !== 'vps',
+    language_code: input.language_code ?? locale,
+    user_locale: input.user_locale ?? locale,
+    timezone_offset_min: input.timezone_offset_min ?? new Date().getTimezoneOffset(),
+    timezone: input.timezone ?? timezone,
+    voice_session_id: voiceSessionId,
+    voice_status_request_id: voiceSessionId
+  }
 }
 
 function resetSessionTemplate(): void {
@@ -529,25 +565,6 @@ function stopStatsTimer(): void {
   statsTimer = null
 }
 
-function waitForIceGatheringComplete(pc: RTCPeerConnection, timeoutMs = 5000): Promise<void> {
-  if (pc.iceGatheringState === 'complete') return Promise.resolve()
-  return new Promise(resolve => {
-    let settled = false
-    const finish = () => {
-      if (settled) return
-      settled = true
-      pc.removeEventListener('icegatheringstatechange', onStateChange)
-      clearTimeout(timeout)
-      resolve()
-    }
-    const onStateChange = () => {
-      if (pc.iceGatheringState === 'complete') finish()
-    }
-    const timeout = setTimeout(finish, timeoutMs)
-    pc.addEventListener('icegatheringstatechange', onStateChange)
-  })
-}
-
 function startElapsedTimer(): void {
   elapsedSeconds.value = 0
   if (elapsedTimer) clearInterval(elapsedTimer)
@@ -619,7 +636,7 @@ async function startSession(): Promise<void> {
   try {
     const parsed = JSON.parse(sessionJson.value) as unknown
     if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') throw new Error('invalid object')
-    sessionPayload = parsed as Record<string, unknown>
+    sessionPayload = prepareSessionPayload(parsed as Record<string, unknown>)
   } catch {
     errorMessage.value = t('admin.realtimeVoiceTest.invalidSessionJson')
     return
@@ -661,8 +678,12 @@ async function startSession(): Promise<void> {
     peerConnection = pc
     updatePeerStates()
     startStatsTimer(pc)
-    localStream.value.getTracks().forEach(track => pc.addTrack(track, localStream.value as MediaStream))
-    bindDataChannel(pc.createDataChannel('oai-events'))
+    // Keep the private ChatGPT transport contract aligned with the web client:
+    // negotiated SCTP dcid=0 and blank audio/video transceivers in the offer.
+    // Attach the microphone only after creating the offer so it does not alter SDP.
+    bindDataChannel(pc.createDataChannel('', { negotiated: true, id: 0 }))
+    const audioTransceiver = pc.addTransceiver('audio')
+    pc.addTransceiver('video', { direction: 'sendonly' })
 
     pc.ondatachannel = event => {
       if (!dataChannel || dataChannel.readyState === 'closed') bindDataChannel(event.channel)
@@ -735,12 +756,14 @@ async function startSession(): Promise<void> {
     pc.onsignalingstatechange = updatePeerStates
 
     status.value = 'connecting'
-    const offer = await pc.createOffer({ offerToReceiveAudio: true })
+    const offer = await pc.createOffer()
     await pc.setLocalDescription(offer)
-    await waitForIceGatheringComplete(pc)
     if (generation !== sessionGeneration || peerConnection !== pc) return
-    const offerSdp = pc.localDescription?.sdp
+    const offerSdp = offer.sdp
     if (!offerSdp) throw new Error('Failed to create local SDP offer')
+    const microphoneTrack = localStream.value.getAudioTracks()[0]
+    if (!microphoneTrack) throw new Error('Microphone stream did not contain an audio track')
+    await audioTransceiver.sender.replaceTrack(microphoneTrack)
 
     status.value = 'signaling'
     const controller = new AbortController()
@@ -753,6 +776,8 @@ async function startSession(): Promise<void> {
       endpoint: endpoint.value,
       session: sessionPayload,
       sdp_size: offerSdp.length,
+      media_sections: offerSdp.split(/\r?\n/).filter(line => line.startsWith('m=')),
+      negotiated_data_channel: { id: dataChannel?.id, label: dataChannel?.label },
       idempotency_key: idempotencyKey
     })
     const headers: Record<string, string> = {
