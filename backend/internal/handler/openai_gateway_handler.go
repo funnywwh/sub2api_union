@@ -1015,15 +1015,55 @@ func (h *OpenAIGatewayHandler) acquireResponsesAccountSlot(
 	streamStarted *bool,
 	reqLog *zap.Logger,
 ) (func(), bool) {
+	return h.acquireResponsesAccountSlotWithPolicy(
+		c, groupID, sessionHash, "", selection, reqStream, streamStarted, reqLog, true,
+	)
+}
+
+// acquireRealtimeVoiceAccountSlot returns the raw release function instead of
+// binding it to the short-lived HTTP request context. On a successful WebRTC
+// handshake the caller deliberately keeps the slot until Redis' fixed slot TTL
+// expires; every unsuccessful path must still invoke the returned function.
+func (h *OpenAIGatewayHandler) acquireRealtimeVoiceAccountSlot(
+	c *gin.Context,
+	groupID *int64,
+	sessionHash string,
+	leaseID string,
+	selection *service.AccountSelectionResult,
+	streamStarted *bool,
+	reqLog *zap.Logger,
+) (func(), bool) {
+	return h.acquireResponsesAccountSlotWithPolicy(
+		c, groupID, sessionHash, leaseID, selection, false, streamStarted, reqLog, false,
+	)
+}
+
+func (h *OpenAIGatewayHandler) acquireResponsesAccountSlotWithPolicy(
+	c *gin.Context,
+	groupID *int64,
+	sessionHash string,
+	persistentLeaseID string,
+	selection *service.AccountSelectionResult,
+	reqStream bool,
+	streamStarted *bool,
+	reqLog *zap.Logger,
+	releaseOnRequestDone bool,
+) (func(), bool) {
 	if selection == nil || selection.Account == nil {
 		h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts", *streamStarted)
 		return nil, false
 	}
 
 	ctx := c.Request.Context()
+	if !releaseOnRequestDone {
+		ctx = service.WithPersistentAccountSlotLease(ctx, persistentLeaseID)
+	}
 	account := selection.Account
 	if selection.Acquired {
-		return wrapReleaseOnDone(ctx, selection.ReleaseFunc), true
+		if releaseOnRequestDone {
+			return wrapReleaseOnDone(ctx, selection.ReleaseFunc), true
+		}
+		return selection.ReleaseFunc, true
 	}
 	if selection.WaitPlan == nil {
 		h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "No available accounts", *streamStarted)
@@ -1044,7 +1084,10 @@ func (h *OpenAIGatewayHandler) acquireResponsesAccountSlot(
 		if err := h.gatewayService.BindStickySession(ctx, groupID, sessionHash, account.ID); err != nil {
 			reqLog.Warn("openai.bind_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 		}
-		return wrapReleaseOnDone(ctx, fastReleaseFunc), true
+		if releaseOnRequestDone {
+			return wrapReleaseOnDone(ctx, fastReleaseFunc), true
+		}
+		return fastReleaseFunc, true
 	}
 
 	canWait, waitErr := h.concurrencyHelper.IncrementAccountWaitCount(ctx, account.ID, selection.WaitPlan.MaxWaiting)
@@ -1068,8 +1111,9 @@ func (h *OpenAIGatewayHandler) acquireResponsesAccountSlot(
 	}
 	defer releaseWait()
 
-	accountReleaseFunc, err := h.concurrencyHelper.AcquireAccountSlotWithWaitTimeout(
+	accountReleaseFunc, err := h.concurrencyHelper.AcquireAccountSlotWithWaitTimeoutContext(
 		c,
+		ctx,
 		account.ID,
 		selection.WaitPlan.MaxConcurrency,
 		selection.WaitPlan.Timeout,
@@ -1087,7 +1131,10 @@ func (h *OpenAIGatewayHandler) acquireResponsesAccountSlot(
 	if err := h.gatewayService.BindStickySession(ctx, groupID, sessionHash, account.ID); err != nil {
 		reqLog.Warn("openai.bind_sticky_session_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 	}
-	return wrapReleaseOnDone(ctx, accountReleaseFunc), true
+	if releaseOnRequestDone {
+		return wrapReleaseOnDone(ctx, accountReleaseFunc), true
+	}
+	return accountReleaseFunc, true
 }
 
 // ResponsesWebSocket handles OpenAI Responses API WebSocket ingress endpoint

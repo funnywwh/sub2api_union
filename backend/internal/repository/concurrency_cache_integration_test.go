@@ -3,6 +3,7 @@
 package repository
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
@@ -91,6 +92,15 @@ func (s *ConcurrencyCacheSuite) TestAccountSlot_DuplicateReqID() {
 	cur, err := s.cache.GetAccountConcurrency(s.ctx, accountID)
 	require.NoError(s.T(), err)
 	require.Equal(s.T(), 1, cur, "expected concurrency=1 (idempotent)")
+
+	leaseCache, ok := s.cache.(interface {
+		AcquireAccountSlotLease(context.Context, int64, int, string) (bool, bool, error)
+	})
+	require.True(s.T(), ok)
+	leaseAcquired, leaseCreated, err := leaseCache.AcquireAccountSlotLease(s.ctx, accountID, 2, reqID)
+	require.NoError(s.T(), err)
+	require.True(s.T(), leaseAcquired)
+	require.False(s.T(), leaseCreated, "duplicate lease acquisition must not claim release ownership")
 }
 
 func (s *ConcurrencyCacheSuite) TestAccountSlot_ReleaseIdempotent() {
@@ -263,6 +273,8 @@ func (s *ConcurrencyCacheSuite) TestCleanupStaleProcessSlots() {
 	require.NoError(s.T(), s.rdb.ZAdd(s.ctx, accountKey,
 		redis.Z{Score: float64(now), Member: "oldproc-1"},
 		redis.Z{Score: float64(now), Member: "keep-1"},
+		redis.Z{Score: float64(now), Member: service.PersistentAccountSlotLeaseRequestPrefix + "oldproc-lease"},
+		redis.Z{Score: float64(now - int64(testSlotTTL.Seconds()) - 1), Member: service.PersistentAccountSlotLeaseRequestPrefix + "expired-lease"},
 	).Err())
 	require.NoError(s.T(), s.rdb.ZAdd(s.ctx, userKey,
 		redis.Z{Score: float64(now), Member: "oldproc-2"},
@@ -275,7 +287,7 @@ func (s *ConcurrencyCacheSuite) TestCleanupStaleProcessSlots() {
 
 	accountMembers, err := s.rdb.ZRange(s.ctx, accountKey, 0, -1).Result()
 	require.NoError(s.T(), err)
-	require.Equal(s.T(), []string{"keep-1"}, accountMembers)
+	require.Equal(s.T(), []string{"keep-1", service.PersistentAccountSlotLeaseRequestPrefix + "oldproc-lease"}, accountMembers)
 
 	userMembers, err := s.rdb.ZRange(s.ctx, userKey, 0, -1).Result()
 	require.NoError(s.T(), err)
@@ -447,6 +459,8 @@ func (s *ConcurrencyCacheSuite) TestCleanupStaleProcessSlots_RemovesOldPrefixesA
 	require.NoError(s.T(), s.rdb.ZAdd(s.ctx, accountSlotKey,
 		redis.Z{Score: now, Member: "oldproc-1"},
 		redis.Z{Score: now, Member: "activeproc-1"},
+		redis.Z{Score: now, Member: service.PersistentAccountSlotLeaseRequestPrefix + "oldproc-lease"},
+		redis.Z{Score: now - testSlotTTL.Seconds() - 1, Member: service.PersistentAccountSlotLeaseRequestPrefix + "expired-lease"},
 	).Err())
 	require.NoError(s.T(), s.rdb.Expire(s.ctx, accountSlotKey, testSlotTTL).Err())
 	require.NoError(s.T(), s.rdb.ZAdd(s.ctx, userSlotKey,
@@ -461,7 +475,7 @@ func (s *ConcurrencyCacheSuite) TestCleanupStaleProcessSlots_RemovesOldPrefixesA
 
 	accountMembers, err := s.rdb.ZRange(s.ctx, accountSlotKey, 0, -1).Result()
 	require.NoError(s.T(), err)
-	require.Equal(s.T(), []string{"activeproc-1"}, accountMembers)
+	require.Equal(s.T(), []string{"activeproc-1", service.PersistentAccountSlotLeaseRequestPrefix + "oldproc-lease"}, accountMembers)
 
 	userMembers, err := s.rdb.ZRange(s.ctx, userSlotKey, 0, -1).Result()
 	require.NoError(s.T(), err)

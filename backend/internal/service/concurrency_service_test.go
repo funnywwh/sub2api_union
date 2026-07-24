@@ -100,6 +100,17 @@ type trackingConcurrencyCache struct {
 	cleanupPrefix string
 }
 
+type persistentLeaseConcurrencyCache struct {
+	stubConcurrencyCacheForTest
+	created    bool
+	requestIDs []string
+}
+
+func (c *persistentLeaseConcurrencyCache) AcquireAccountSlotLease(_ context.Context, _ int64, _ int, requestID string) (bool, bool, error) {
+	c.requestIDs = append(c.requestIDs, requestID)
+	return true, c.created, nil
+}
+
 func (c *trackingConcurrencyCache) CleanupStaleProcessSlots(_ context.Context, prefix string) error {
 	c.cleanupPrefix = prefix
 	return c.cleanupErr
@@ -115,6 +126,45 @@ func TestCleanupStaleProcessSlots_DelegatesPrefix(t *testing.T) {
 	svc := NewConcurrencyService(cache)
 	require.NoError(t, svc.CleanupStaleProcessSlots(context.Background()))
 	require.Equal(t, RequestIDPrefix(), cache.cleanupPrefix)
+}
+
+func TestPersistentAccountSlotLeaseRequestIDIsDeterministic(t *testing.T) {
+	ctx := WithPersistentAccountSlotLease(context.Background(), "realtime-call:7:semantic-offer")
+	first, firstPersistent := generateAccountSlotRequestID(ctx)
+	second, secondPersistent := generateAccountSlotRequestID(ctx)
+
+	require.Equal(t, first, second)
+	require.True(t, firstPersistent)
+	require.True(t, secondPersistent)
+	require.True(t, strings.HasPrefix(first, PersistentAccountSlotLeaseRequestPrefix))
+}
+
+func TestPersistentAccountSlotLeaseReuserDoesNotReleaseOwner(t *testing.T) {
+	cache := &persistentLeaseConcurrencyCache{created: false}
+	svc := NewConcurrencyService(cache)
+	ctx := WithPersistentAccountSlotLease(context.Background(), "realtime-call:7:semantic-offer")
+
+	result, err := svc.AcquireAccountSlot(ctx, 42, 1)
+	require.NoError(t, err)
+	require.True(t, result.Acquired)
+	result.ReleaseFunc()
+
+	require.Empty(t, cache.releasedAccountIDs)
+	require.Len(t, cache.requestIDs, 1)
+}
+
+func TestPersistentAccountSlotLeaseCreatorCanRelease(t *testing.T) {
+	cache := &persistentLeaseConcurrencyCache{created: true}
+	svc := NewConcurrencyService(cache)
+	ctx := WithPersistentAccountSlotLease(context.Background(), "realtime-call:7:semantic-offer")
+
+	result, err := svc.AcquireAccountSlot(ctx, 42, 1)
+	require.NoError(t, err)
+	require.True(t, result.Acquired)
+	result.ReleaseFunc()
+
+	require.Equal(t, []int64{42}, cache.releasedAccountIDs)
+	require.Equal(t, cache.requestIDs, cache.releasedRequestIDs)
 }
 
 func TestAcquireAccountSlot_Success(t *testing.T) {

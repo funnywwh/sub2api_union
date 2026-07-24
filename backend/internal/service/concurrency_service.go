@@ -3,9 +3,12 @@ package service
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"os"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -48,10 +51,38 @@ type ConcurrencyCache interface {
 	CleanupStaleProcessSlots(ctx context.Context, activeRequestPrefix string) error
 }
 
+type persistentAccountSlotLeaseCache interface {
+	AcquireAccountSlotLease(ctx context.Context, accountID int64, maxConcurrency int, requestID string) (acquired bool, created bool, err error)
+}
+
 var (
 	requestIDPrefix  = initRequestIDPrefix()
 	requestIDCounter atomic.Uint64
 )
+
+// PersistentAccountSlotLeaseRequestPrefix marks account slots that represent
+// direct-media sessions rather than the lifetime of one gateway process. The
+// repository keeps these members during startup cleanup and lets the normal
+// fixed slot TTL expire them.
+const PersistentAccountSlotLeaseRequestPrefix = "lease-"
+
+type persistentAccountSlotLeaseContextKey struct{}
+
+type persistentAccountSlotLease struct {
+	leaseID string
+}
+
+// WithPersistentAccountSlotLease makes account slots acquired with ctx survive
+// process startup cleanup until their regular Redis TTL expires. User slots are
+// intentionally unaffected.
+func WithPersistentAccountSlotLease(ctx context.Context, leaseID string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, persistentAccountSlotLeaseContextKey{}, persistentAccountSlotLease{
+		leaseID: strings.TrimSpace(leaseID),
+	})
+}
 
 func initRequestIDPrefix() string {
 	b := make([]byte, 8)
@@ -69,6 +100,19 @@ func RequestIDPrefix() string {
 func generateRequestID() string {
 	seq := requestIDCounter.Add(1)
 	return requestIDPrefix + "-" + strconv.FormatUint(seq, 36)
+}
+
+func generateAccountSlotRequestID(ctx context.Context) (string, bool) {
+	if ctx != nil {
+		if lease, persistent := ctx.Value(persistentAccountSlotLeaseContextKey{}).(persistentAccountSlotLease); persistent {
+			if lease.leaseID == "" {
+				return PersistentAccountSlotLeaseRequestPrefix + generateRequestID(), true
+			}
+			digest := sha256.Sum256([]byte(lease.leaseID))
+			return PersistentAccountSlotLeaseRequestPrefix + hex.EncodeToString(digest[:]), true
+		}
+	}
+	return generateRequestID(), false
 }
 
 func (s *ConcurrencyService) CleanupStaleProcessSlots(ctx context.Context) error {
@@ -135,8 +179,29 @@ func (s *ConcurrencyService) AcquireAccountSlot(ctx context.Context, accountID i
 		}, nil
 	}
 
-	// Generate unique request ID for this slot
-	requestID := generateRequestID()
+	// Direct-media leases use a deterministic request ID so signaling retries
+	// reuse one slot. Ordinary requests keep their process-unique request ID.
+	requestID, persistentLease := generateAccountSlotRequestID(ctx)
+	if persistentLease {
+		if leaseCache, ok := s.cache.(persistentAccountSlotLeaseCache); ok {
+			acquired, created, err := leaseCache.AcquireAccountSlotLease(ctx, accountID, maxConcurrency, requestID)
+			if err != nil {
+				return nil, err
+			}
+			if acquired {
+				if !created {
+					// A retry that reused an existing lease does not own it and must
+					// not remove the active session's slot on its own failure path.
+					return &AcquireResult{Acquired: true, ReleaseFunc: func() {}}, nil
+				}
+				return &AcquireResult{
+					Acquired:    true,
+					ReleaseFunc: s.accountSlotReleaseFunc(accountID, requestID),
+				}, nil
+			}
+			return &AcquireResult{Acquired: false}, nil
+		}
+	}
 
 	acquired, err := s.cache.AcquireAccountSlot(ctx, accountID, maxConcurrency, requestID)
 	if err != nil {
@@ -145,14 +210,8 @@ func (s *ConcurrencyService) AcquireAccountSlot(ctx context.Context, accountID i
 
 	if acquired {
 		return &AcquireResult{
-			Acquired: true,
-			ReleaseFunc: func() {
-				bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-				if err := s.cache.ReleaseAccountSlot(bgCtx, accountID, requestID); err != nil {
-					logger.LegacyPrintf("service.concurrency", "Warning: failed to release account slot for %d (req=%s): %v", accountID, requestID, err)
-				}
-			},
+			Acquired:    true,
+			ReleaseFunc: s.accountSlotReleaseFunc(accountID, requestID),
 		}, nil
 	}
 
@@ -160,6 +219,16 @@ func (s *ConcurrencyService) AcquireAccountSlot(ctx context.Context, accountID i
 		Acquired:    false,
 		ReleaseFunc: nil,
 	}, nil
+}
+
+func (s *ConcurrencyService) accountSlotReleaseFunc(accountID int64, requestID string) func() {
+	return func() {
+		bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := s.cache.ReleaseAccountSlot(bgCtx, accountID, requestID); err != nil {
+			logger.LegacyPrintf("service.concurrency", "Warning: failed to release account slot for %d (req=%s): %v", accountID, requestID, err)
+		}
+	}
 }
 
 // AcquireUserSlot attempts to acquire a concurrency slot for a user.

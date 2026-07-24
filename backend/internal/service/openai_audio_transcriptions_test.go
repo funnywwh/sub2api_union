@@ -49,6 +49,26 @@ func newOpenAIAudioTranscriptionTestContext(body []byte, contentType string) (*g
 	return c, recorder
 }
 
+func buildOpenAIRealtimeVoiceCallTestBody(t *testing.T, sdp, session string) ([]byte, string) {
+	t.Helper()
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	require.NoError(t, writer.WriteField("sdp", sdp))
+	require.NoError(t, writer.WriteField("session", session))
+	require.NoError(t, writer.Close())
+	return body.Bytes(), writer.FormDataContentType()
+}
+
+func newOpenAIRealtimeVoiceCallTestContext(path string, body []byte, contentType string) (*gin.Context, *httptest.ResponseRecorder) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
+	req.Header.Set("Content-Type", contentType)
+	c.Request = req
+	return c, recorder
+}
+
 func newOpenAIAudioTranscriptionPricingResolver(t *testing.T, pricing []ChannelModelPricing) *ModelPricingResolver {
 	t.Helper()
 	const groupID = int64(100)
@@ -190,6 +210,81 @@ func TestParseOpenAIAudioTranscriptionRequestRejectsOversizedFile(t *testing.T) 
 	require.Equal(t, int64(openAIAudioMaxFileSize), maxErr.Limit)
 }
 
+func TestParseOpenAIRealtimeVoiceCallRequestUsesChatGPTUnifiedWebRTCPath(t *testing.T) {
+	body, contentType := buildOpenAIRealtimeVoiceCallTestBody(t,
+		"v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\n",
+		`{"voice_mode":"advanced","requested_default_model":"gpt-4o-realtime"}`,
+	)
+	c, _ := newOpenAIRealtimeVoiceCallTestContext("/v1/realtime/calls?dcid=7&instant_connect=1", body, contentType)
+
+	parsed, err := (&OpenAIGatewayService{}).ParseOpenAIRealtimeVoiceCallRequest(c, "")
+	require.NoError(t, err)
+	require.Equal(t, chatgptRealtimeVoiceAdvancedPath, parsed.UpstreamPath)
+	require.Equal(t, "dcid=7&instant_connect=1", parsed.Query)
+	require.Equal(t, "gpt-4o-realtime", parsed.Model)
+	require.NotEmpty(t, parsed.StickySessionSeed())
+}
+
+func TestParseOpenAIRealtimeVoiceCallRequestMapsStandardVoicePath(t *testing.T) {
+	body, contentType := buildOpenAIRealtimeVoiceCallTestBody(t,
+		"v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\n",
+		`{"voice_mode":"standard"}`,
+	)
+	c, _ := newOpenAIRealtimeVoiceCallTestContext("/realtime/calls", body, contentType)
+
+	parsed, err := (&OpenAIGatewayService{}).ParseOpenAIRealtimeVoiceCallRequest(c, "")
+	require.NoError(t, err)
+	require.Equal(t, chatgptRealtimeVoiceStandardPath, parsed.UpstreamPath)
+	require.Equal(t, "dcid=0", parsed.Query)
+	require.Equal(t, OpenAIRealtimeVoiceBillingModel, parsed.Model)
+}
+
+func TestParseOpenAIRealtimeVoiceCallRequestMapsWingmanSessionType(t *testing.T) {
+	body, contentType := buildOpenAIRealtimeVoiceCallTestBody(t,
+		"v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\n",
+		`{"session_type":"wingman"}`,
+	)
+	c, _ := newOpenAIRealtimeVoiceCallTestContext("/v1/realtime/calls", body, contentType)
+
+	parsed, err := (&OpenAIGatewayService{}).ParseOpenAIRealtimeVoiceCallRequest(c, "")
+	require.NoError(t, err)
+	require.Equal(t, chatgptRealtimeVoiceWingmanPath, parsed.UpstreamPath)
+	require.Equal(t, OpenAIRealtimeVoiceBillingModel, parsed.Model)
+}
+
+func TestOpenAIRealtimeVoiceCallUsageRequestIDIgnoresMultipartBoundary(t *testing.T) {
+	const sdp = "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\na=ice-ufrag:retry-id\r\n"
+	const session = `{"voice_mode":"advanced","voice":"alloy"}`
+	body1, contentType1 := buildOpenAIRealtimeVoiceCallTestBody(t, sdp, session)
+	body2, contentType2 := buildOpenAIRealtimeVoiceCallTestBody(t, sdp, session)
+	c1, _ := newOpenAIRealtimeVoiceCallTestContext("/v1/realtime/calls?dcid=7", body1, contentType1)
+	c2, _ := newOpenAIRealtimeVoiceCallTestContext("/v1/realtime/calls?dcid=7", body2, contentType2)
+
+	parsed1, err := (&OpenAIGatewayService{}).ParseOpenAIRealtimeVoiceCallRequest(c1, "")
+	require.NoError(t, err)
+	parsed2, err := (&OpenAIGatewayService{}).ParseOpenAIRealtimeVoiceCallRequest(c2, "")
+	require.NoError(t, err)
+
+	require.Equal(t, parsed1.UsagePayloadHash(), parsed2.UsagePayloadHash())
+	require.Equal(t, parsed1.UsageRequestID(99), parsed2.UsageRequestID(99))
+	require.Equal(t, parsed1.StickySessionSeed(), parsed2.StickySessionSeed())
+}
+
+func TestParseOpenAIRealtimeVoiceCallRequestRejectsOversizedRequest(t *testing.T) {
+	body, contentType := buildOpenAIRealtimeVoiceCallTestBody(t,
+		"v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\n",
+		`{"voice_mode":"advanced"}`,
+	)
+	c, _ := newOpenAIRealtimeVoiceCallTestContext("/v1/realtime/calls", body, contentType)
+	c.Request.ContentLength = realtimeVoiceCallMaxRequestSize + 1
+
+	parsed, err := (&OpenAIGatewayService{}).ParseOpenAIRealtimeVoiceCallRequest(c, "")
+	require.Nil(t, parsed)
+	var maxErr *http.MaxBytesError
+	require.ErrorAs(t, err, &maxErr)
+	require.Equal(t, int64(realtimeVoiceCallMaxRequestSize), maxErr.Limit)
+}
+
 func TestForwardAudioTranscriptionOAuthUsesChatGPTBackend(t *testing.T) {
 	body, contentType := buildOpenAIAudioTranscriptionTestBody(t, map[string]string{
 		"model":           "gpt-4o-mini-transcribe",
@@ -241,6 +336,149 @@ func TestForwardAudioTranscriptionOAuthUsesChatGPTBackend(t *testing.T) {
 	require.Equal(t, "hello from audio", gjson.Get(recorder.Body.String(), "text").String())
 }
 
+func TestForwardOAuthRealtimeVoiceTokenUsesChatGPTBootstrap(t *testing.T) {
+	c, _ := newOpenAIAudioTranscriptionTestContext(nil, "application/json")
+	c.Request.Header.Set("OpenAI-Sentinel-Proof-Token", "token-proof")
+	upstreamBody := `{"token":"short-lived-token","e2ee_key":"secret-material","url":"https://voice.example.test"}`
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header: http.Header{
+			"Content-Type": []string{"application/json"},
+			"X-Request-Id": []string{"req_voice_token"},
+		},
+		Body: io.NopCloser(strings.NewReader(upstreamBody)),
+	}}
+	svc := &OpenAIGatewayService{httpUpstream: upstream}
+	account := &Account{
+		ID:       12,
+		Name:     "codex-oauth-voice",
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"access_token":       "oauth-token",
+			"chatgpt_account_id": "acct-voice",
+		},
+	}
+
+	result, err := svc.ForwardOAuthRealtimeVoiceToken(context.Background(), c, account)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.JSONEq(t, upstreamBody, string(result.Body))
+	require.Equal(t, "application/json", result.ContentType)
+	require.Equal(t, chatgptRealtimeVoiceTokenURL, upstream.lastReq.URL.String())
+	require.Equal(t, http.MethodGet, upstream.lastReq.Method)
+	require.Equal(t, "chatgpt.com", upstream.lastReq.Host)
+	require.Equal(t, "Bearer oauth-token", upstream.lastReq.Header.Get("Authorization"))
+	require.Equal(t, "acct-voice", upstream.lastReq.Header.Get("chatgpt-account-id"))
+	require.Equal(t, "token-proof", upstream.lastReq.Header.Get("OpenAI-Sentinel-Proof-Token"))
+	require.Equal(t, "Codex Desktop", upstream.lastReq.Header.Get("Originator"))
+	require.Equal(t, "application/json", upstream.lastReq.Header.Get("Accept"))
+}
+
+func TestForwardOAuthRealtimeVoiceCallUsesBoundedUnifiedWebRTCHandshake(t *testing.T) {
+	offerSDP := "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\n"
+	sessionJSON := `{"voice_mode":"advanced","voice":"alloy","requested_default_model":"gpt-4o-realtime"}`
+	body, contentType := buildOpenAIRealtimeVoiceCallTestBody(t, offerSDP, sessionJSON)
+	c, _ := newOpenAIRealtimeVoiceCallTestContext("/v1/realtime/calls?dcid=3", body, contentType)
+	c.Request.Header.Set("OpenAI-Sentinel-Proof-Token", "proof-token")
+	parsed, err := (&OpenAIGatewayService{}).ParseOpenAIRealtimeVoiceCallRequest(c, "")
+	require.NoError(t, err)
+
+	answerSDP := "v=0\r\no=- 2 2 IN IP4 127.0.0.1\r\n"
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header: http.Header{
+			"Content-Type": []string{"application/sdp"},
+			"X-Request-Id": []string{"req_realtime_voice"},
+		},
+		Body: io.NopCloser(strings.NewReader(answerSDP)),
+	}}
+	svc := &OpenAIGatewayService{httpUpstream: upstream}
+	account := &Account{
+		ID:       15,
+		Name:     "codex-oauth-realtime",
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"access_token":       "oauth-token",
+			"chatgpt_account_id": "acct-realtime",
+		},
+	}
+
+	result, err := svc.ForwardOAuthRealtimeVoiceCall(context.Background(), c, account, parsed)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, http.StatusOK, result.StatusCode)
+	require.Equal(t, answerSDP, string(result.Body))
+	require.Equal(t, "application/sdp", result.ContentType)
+	require.Equal(t, "https://chatgpt.com/realtime/vp?dcid=3", upstream.lastReq.URL.String())
+	require.Equal(t, "chatgpt.com", upstream.lastReq.Host)
+	require.Equal(t, "Bearer oauth-token", upstream.lastReq.Header.Get("Authorization"))
+	require.Equal(t, "acct-realtime", upstream.lastReq.Header.Get("chatgpt-account-id"))
+	require.Equal(t, "proof-token", upstream.lastReq.Header.Get("OpenAI-Sentinel-Proof-Token"))
+	require.Contains(t, upstream.lastReq.Header.Get("Content-Type"), "multipart/form-data")
+
+	fields := readOpenAIRealtimeMultipartFields(t, upstream.lastReq.Header.Get("Content-Type"), upstream.lastBody)
+	require.Equal(t, offerSDP, fields["sdp"])
+	require.JSONEq(t, sessionJSON, fields["session"])
+}
+
+func TestForwardOAuthRealtimeVoiceCallRejectsUnboundedResponse(t *testing.T) {
+	body, contentType := buildOpenAIRealtimeVoiceCallTestBody(t,
+		"v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\n",
+		`{"voice_mode":"advanced"}`,
+	)
+	c, _ := newOpenAIRealtimeVoiceCallTestContext("/v1/realtime/calls", body, contentType)
+	parsed, err := (&OpenAIGatewayService{}).ParseOpenAIRealtimeVoiceCallRequest(c, "")
+	require.NoError(t, err)
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/sdp"}},
+		Body:       io.NopCloser(bytes.NewReader(bytes.Repeat([]byte("x"), realtimeVoiceCallMaxResponseSize+1))),
+	}}
+	svc := &OpenAIGatewayService{httpUpstream: upstream}
+	account := &Account{
+		ID:          16,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Credentials: map[string]any{"access_token": "oauth-token"},
+	}
+
+	result, err := svc.ForwardOAuthRealtimeVoiceCall(context.Background(), c, account, parsed)
+	require.Nil(t, result)
+	require.ErrorContains(t, err, "exceeds")
+}
+
+func TestForwardOAuthRealtimeVoiceTokenRejectsUnboundedResponse(t *testing.T) {
+	c, _ := newOpenAIAudioTranscriptionTestContext(nil, "application/json")
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(bytes.NewReader(bytes.Repeat([]byte("x"), realtimeVoiceTokenMaxSize+1))),
+	}}
+	svc := &OpenAIGatewayService{httpUpstream: upstream}
+	account := &Account{
+		ID:          13,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Credentials: map[string]any{"access_token": "oauth-token"},
+	}
+
+	result, err := svc.ForwardOAuthRealtimeVoiceToken(context.Background(), c, account)
+	require.Nil(t, result)
+	require.ErrorContains(t, err, "exceeds")
+}
+
+func TestForwardOAuthRealtimeVoiceTokenRejectsNonOAuthAccount(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+	account := &Account{ID: 14, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+
+	result, err := svc.ForwardOAuthRealtimeVoiceToken(context.Background(), nil, account)
+	require.Nil(t, result)
+	require.ErrorContains(t, err, "OAuth account")
+}
+
 func TestSelectAccountWithSchedulerForAudioTranscriptionAllowsCodexOAuthOutsideTextModelMapping(t *testing.T) {
 	resetOpenAIAdvancedSchedulerSettingCacheForTest()
 
@@ -285,6 +523,53 @@ func TestSelectAccountWithSchedulerForAudioTranscriptionAllowsCodexOAuthOutsideT
 	require.NotNil(t, selection.Account)
 	require.Equal(t, account.ID, selection.Account.ID)
 	require.Equal(t, AccountTypeOAuth, selection.Account.Type)
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}
+
+func TestSelectAccountWithSchedulerForRealtimeVoiceRequiresOAuth(t *testing.T) {
+	resetOpenAIAdvancedSchedulerSettingCacheForTest()
+
+	ctx := context.Background()
+	groupID := int64(7103)
+	accounts := []Account{
+		{
+			ID:          71003,
+			Name:        "platform-key",
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+		},
+		{
+			ID:          71004,
+			Name:        "codex-oauth-voice",
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeOAuth,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+		},
+	}
+	cfg := &config.Config{}
+	cfg.Gateway.Scheduling.LoadBatchEnabled = false
+	var acquiredRequestIDs []string
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+		cache:              &schedulerTestGatewayCache{},
+		cfg:                cfg,
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{acquiredRequestIDs: &acquiredRequestIDs}),
+	}
+
+	selection, _, err := svc.SelectAccountWithSchedulerForRealtimeVoice(ctx, &groupID, "voice-session", "voice-lease", nil)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.Equal(t, int64(71004), selection.Account.ID)
+	require.Equal(t, AccountTypeOAuth, selection.Account.Type)
+	require.NotEmpty(t, acquiredRequestIDs)
+	require.True(t, strings.HasPrefix(acquiredRequestIDs[len(acquiredRequestIDs)-1], PersistentAccountSlotLeaseRequestPrefix))
 	if selection.ReleaseFunc != nil {
 		selection.ReleaseFunc()
 	}
@@ -443,6 +728,27 @@ func readOpenAIAudioMultipartFieldNames(t *testing.T, req *http.Request) []strin
 		require.NoError(t, part.Close())
 	}
 	return names
+}
+
+func readOpenAIRealtimeMultipartFields(t *testing.T, contentType string, body []byte) map[string]string {
+	t.Helper()
+	mediaType, params, err := mime.ParseMediaType(contentType)
+	require.NoError(t, err)
+	require.Equal(t, "multipart/form-data", mediaType)
+	reader := multipart.NewReader(bytes.NewReader(body), params["boundary"])
+	fields := make(map[string]string)
+	for {
+		part, err := reader.NextPart()
+		if err == io.EOF {
+			break
+		}
+		require.NoError(t, err)
+		value, err := io.ReadAll(part)
+		require.NoError(t, err)
+		require.NoError(t, part.Close())
+		fields[part.FormName()] = string(value)
+	}
+	return fields
 }
 
 func TestForwardAudioTranscriptionAPIKeyUsesPlatformEndpointAndParsesAudioUsage(t *testing.T) {
@@ -679,6 +985,50 @@ func TestForwardAudioTranscriptionOAuthRejectsUnsupportedFormat(t *testing.T) {
 	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth}
 	_, err = svc.ForwardAudioTranscription(context.Background(), c, account, parsed, "")
 	require.ErrorContains(t, err, "does not support")
+}
+
+func TestValidateRealtimeVoiceBillingRequiresPositivePerRequestPricing(t *testing.T) {
+	inputPrice := 1e-6
+	resolver := newOpenAIAudioTranscriptionPricingResolver(t, []ChannelModelPricing{{
+		Platform:    PlatformOpenAI,
+		Models:      []string{OpenAIRealtimeVoiceBillingModel},
+		BillingMode: BillingModeToken,
+		InputPrice:  &inputPrice,
+	}})
+	svc := &OpenAIGatewayService{resolver: resolver, billingService: resolver.billingService}
+	groupID := int64(100)
+	apiKey := &APIKey{GroupID: &groupID, Group: &Group{ID: groupID}}
+
+	err := svc.ValidateRealtimeVoiceBilling(context.Background(), apiKey)
+	require.ErrorContains(t, err, "positive per_request channel pricing")
+}
+
+func TestValidateRealtimeVoiceBillingAndCostUseStablePerRequestModel(t *testing.T) {
+	price := 0.08
+	resolver := newOpenAIAudioTranscriptionPricingResolver(t, []ChannelModelPricing{{
+		Platform:        PlatformOpenAI,
+		Models:          []string{OpenAIRealtimeVoiceBillingModel},
+		BillingMode:     BillingModePerRequest,
+		PerRequestPrice: &price,
+	}})
+	svc := &OpenAIGatewayService{resolver: resolver, billingService: resolver.billingService}
+	groupID := int64(100)
+	apiKey := &APIKey{GroupID: &groupID, Group: &Group{ID: groupID}}
+
+	require.NoError(t, svc.ValidateRealtimeVoiceBilling(context.Background(), apiKey))
+	cost, err := svc.calculateOpenAIRecordUsageCost(
+		context.Background(),
+		&OpenAIForwardResult{ForcePerRequestBilling: true},
+		apiKey,
+		"untrusted-private-upstream-model",
+		1.5,
+		UsageTokens{},
+		"",
+	)
+	require.NoError(t, err)
+	require.Equal(t, string(BillingModePerRequest), cost.BillingMode)
+	require.InDelta(t, price, cost.TotalCost, 1e-12)
+	require.InDelta(t, price*1.5, cost.ActualCost, 1e-12)
 }
 
 func TestValidateOAuthAudioTranscriptionBillingUsesDefaultForTokenPricing(t *testing.T) {

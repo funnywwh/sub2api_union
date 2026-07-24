@@ -43,6 +43,32 @@ func RegisterGatewayRoutes(
 		}
 		h.OpenAIGateway.Embeddings(c)
 	}
+	realtimeVoiceTokenHandler := func(c *gin.Context) {
+		if getGroupPlatform(c) != service.PlatformOpenAI {
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": gin.H{
+					"type":    "not_found_error",
+					"message": "Realtime voice is not supported for this platform",
+				},
+			})
+			return
+		}
+		h.OpenAIGateway.RealtimeVoiceToken(c)
+	}
+	realtimeVoiceCallHandler := func(mode string) gin.HandlerFunc {
+		return func(c *gin.Context) {
+			if getGroupPlatform(c) != service.PlatformOpenAI {
+				c.JSON(http.StatusNotFound, gin.H{
+					"error": gin.H{
+						"type":    "not_found_error",
+						"message": "Realtime voice is not supported for this platform",
+					},
+				})
+				return
+			}
+			h.OpenAIGateway.RealtimeVoiceCall(c, mode)
+		}
+	}
 
 	// API网关（Claude API兼容）
 	gateway := r.Group("/v1")
@@ -139,6 +165,12 @@ func RegisterGatewayRoutes(
 			}
 			h.OpenAIGateway.AudioTranscriptions(c)
 		})
+		gateway.GET("/realtime/voice_token", realtimeVoiceTokenHandler)
+		gateway.POST("/realtime/voice_token", realtimeVoiceTokenHandler)
+		gateway.POST("/realtime/calls", realtimeVoiceCallHandler(""))
+		gateway.POST("/realtime/vp", realtimeVoiceCallHandler("vp"))
+		gateway.POST("/realtime/vps", realtimeVoiceCallHandler("vps"))
+		gateway.POST("/realtime/wm", realtimeVoiceCallHandler("wm"))
 	}
 
 	// Gemini 原生 API 兼容层（Gemini SDK/CLI 直连）
@@ -222,6 +254,19 @@ func RegisterGatewayRoutes(
 		}
 		h.OpenAIGateway.AudioTranscriptions(c)
 	})
+	r.GET("/realtime/voice_token", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, realtimeVoiceTokenHandler)
+	r.POST("/realtime/voice_token", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, realtimeVoiceTokenHandler)
+	r.POST("/realtime/calls", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, realtimeVoiceCallHandler(""))
+	// Current ChatGPT-compatible unified WebRTC signaling paths. These carry
+	// only SDP + session JSON; ICE media connects directly after negotiation.
+	r.POST("/realtime/vp", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, realtimeVoiceCallHandler("vp"))
+	r.POST("/realtime/vps", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, realtimeVoiceCallHandler("vps"))
+	r.POST("/realtime/wm", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, realtimeVoiceCallHandler("wm"))
+	// ChatGPT-compatible control-plane alias. It returns the upstream short-lived
+	// token/E2EE response; media still connects directly and never crosses this
+	// gateway.
+	r.GET("/backend-api/voice_token", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, realtimeVoiceTokenHandler)
+	r.POST("/backend-api/voice_token", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, realtimeVoiceTokenHandler)
 
 	// HappyHorse video generation API（独立视频平台）
 	happyHorse := r.Group("/v1/videos")

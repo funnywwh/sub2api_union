@@ -243,6 +243,10 @@ type OpenAIForwardResult struct {
 	// ForceAudioBilling uses per-request or per-hour transcription pricing instead
 	// of falling back to zero-token token billing.
 	ForceAudioBilling bool
+	// ForcePerRequestBilling is used by usage-less session creation endpoints,
+	// such as realtime voice, that must charge exactly once per successful
+	// session using explicit channel per-request pricing.
+	ForcePerRequestBilling bool
 }
 
 type OpenAIWSRetryMetricsSnapshot struct {
@@ -5255,7 +5259,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	simpleMode := s.cfg != nil && s.cfg.RunMode == config.RunModeSimple
 	cost, err = s.calculateOpenAIRecordUsageCost(ctx, result, apiKey, billingModel, multiplier, tokens, serviceTier)
 	if err != nil {
-		if result.ForceAudioBilling && !simpleMode {
+		if (result.ForceAudioBilling || result.ForcePerRequestBilling) && !simpleMode {
 			return err
 		}
 		cost = &CostBreakdown{ActualCost: 0}
@@ -5408,6 +5412,9 @@ func (s *OpenAIGatewayService) calculateOpenAIRecordUsageCost(
 	}
 	if result != nil && result.ForceAudioBilling {
 		return s.calculateAudioTranscriptionCost(ctx, billingModel, apiKey, multiplier, result.AudioDuration)
+	}
+	if result != nil && result.ForcePerRequestBilling {
+		return s.calculateRealtimeVoiceCost(ctx, apiKey, multiplier)
 	}
 	if s.resolver != nil && apiKey != nil && apiKey.Group != nil {
 		audioDuration := time.Duration(0)

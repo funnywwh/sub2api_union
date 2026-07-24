@@ -12,7 +12,9 @@ import (
 	"mime"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -30,6 +32,27 @@ const (
 	// Codex OAuth tokens are ChatGPT credentials, not Platform API keys. ChatGPT's
 	// transcription backend is therefore the OAuth upstream for this endpoint.
 	chatgptAudioTranscriptionsURL = "https://chatgpt.com/backend-api/transcribe"
+	chatgptRealtimeVoiceBaseURL   = "https://chatgpt.com"
+	// ChatGPT bootstraps realtime voice with a small, short-lived credential
+	// response. Media is sent directly by the client over the transport described
+	// by that response; it must never be buffered by this gateway.
+	chatgptRealtimeVoiceTokenURL = "https://chatgpt.com/backend-api/voice_token"
+	realtimeVoiceTokenMaxSize    = 64 << 10
+
+	// ChatGPT's current web client uses the Realtime unified WebRTC handshake:
+	// one bounded multipart request containing an SDP offer and session JSON,
+	// followed by direct ICE/DTLS/SRTP media between the client and OpenAI.
+	chatgptRealtimeVoiceAdvancedPath = "/realtime/vp"
+	chatgptRealtimeVoiceStandardPath = "/realtime/vps"
+	chatgptRealtimeVoiceWingmanPath  = "/realtime/wm"
+	realtimeVoiceSDPMaxSize          = 256 << 10
+	realtimeVoiceSessionMaxSize      = 256 << 10
+	realtimeVoiceCallMaxRequestSize  = 1 << 20
+	realtimeVoiceCallMaxResponseSize = 1 << 20
+	// OpenAIRealtimeVoiceBillingModel is deliberately independent from
+	// ChatGPT's private upstream model names. Realtime voice is billed once per
+	// successfully created session through channel per-request pricing.
+	OpenAIRealtimeVoiceBillingModel = "chatgpt-realtime-voice"
 
 	openAIAudioMaxFieldSize   = 1 << 20
 	openAIAudioMaxFileSize    = 25 << 20
@@ -59,6 +82,179 @@ type OpenAIAudioTranscriptionRequest struct {
 	FileSize        int64
 	AudioDuration   time.Duration
 	bodyHash        string
+}
+
+// OpenAIRealtimeVoiceTokenResult is intentionally a raw, size-bounded
+// passthrough. ChatGPT's private response fields can evolve independently of
+// this gateway, and clients need the upstream token/E2EE material unchanged.
+type OpenAIRealtimeVoiceTokenResult struct {
+	Body            []byte
+	ContentType     string
+	ResponseHeaders http.Header
+}
+
+// OpenAIRealtimeVoiceCallRequest is the bounded WebRTC signaling payload. It
+// never contains microphone frames; those flow directly over the peer
+// connection negotiated by SDP.
+type OpenAIRealtimeVoiceCallRequest struct {
+	SDP          []byte
+	Session      []byte
+	UpstreamPath string
+	Query        string
+	Model        string
+}
+
+type OpenAIRealtimeVoiceCallResult struct {
+	StatusCode      int
+	Body            []byte
+	ContentType     string
+	ResponseHeaders http.Header
+}
+
+func (r *OpenAIRealtimeVoiceCallRequest) StickySessionSeed() string {
+	if r == nil {
+		return ""
+	}
+	return strings.Join([]string{
+		"openai-realtime-voice-call",
+		strings.TrimSpace(r.Model),
+		strings.TrimSpace(r.UpstreamPath),
+		strings.TrimSpace(r.Query),
+		r.UsagePayloadHash(),
+	}, "|")
+}
+
+// UsagePayloadHash returns a semantic signaling fingerprint. Multipart
+// boundaries are intentionally excluded so a transport retry of the same SDP
+// offer remains idempotent, while a new PeerConnection produces a new lease
+// and charge through its different SDP/ICE credentials.
+func (r *OpenAIRealtimeVoiceCallRequest) UsagePayloadHash() string {
+	if r == nil {
+		return ""
+	}
+	hash := sha256.New()
+	for _, value := range [][]byte{
+		[]byte(strings.TrimSpace(r.UpstreamPath)),
+		[]byte(strings.TrimSpace(r.Query)),
+		bytes.TrimSpace(r.SDP),
+		bytes.TrimSpace(r.Session),
+	} {
+		_, _ = hash.Write([]byte(strconv.Itoa(len(value))))
+		_, _ = hash.Write([]byte{':'})
+		_, _ = hash.Write(value)
+		_, _ = hash.Write([]byte{'\n'})
+	}
+	return hex.EncodeToString(hash.Sum(nil))
+}
+
+func (r *OpenAIRealtimeVoiceCallRequest) UsageRequestID(apiKeyID int64) string {
+	if r == nil {
+		return ""
+	}
+	return fmt.Sprintf("realtime-call:%d:%s", apiKeyID, r.UsagePayloadHash())
+}
+
+// SelectAccountWithSchedulerForRealtimeVoice selects OAuth only and skips
+// text-model mapping. ChatGPT voice is an account capability, not a Codex text
+// model advertised by account model_mapping.
+func (s *OpenAIGatewayService) SelectAccountWithSchedulerForRealtimeVoice(
+	ctx context.Context,
+	groupID *int64,
+	sessionHash string,
+	leaseID string,
+	excludedIDs map[int64]struct{},
+) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
+	ctx = WithPersistentAccountSlotLease(ctx, leaseID)
+	return s.SelectAccountWithScheduler(
+		ctx,
+		groupID,
+		"",
+		sessionHash,
+		"",
+		excludedIDs,
+		OpenAIUpstreamTransportAny,
+		false,
+		AccountTypeOAuth,
+	)
+}
+
+// ValidateRealtimeVoiceBilling requires an explicit positive per-session
+// channel price. ChatGPT's private WebRTC path does not expose reliable token
+// usage to this gateway, so zero-token or private-model-name billing would
+// silently make sessions free.
+func (s *OpenAIGatewayService) ValidateRealtimeVoiceBilling(ctx context.Context, apiKey *APIKey) error {
+	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
+		return nil
+	}
+	resolved := s.resolveRealtimeVoiceChannelPricing(ctx, apiKey)
+	if resolved == nil {
+		return fmt.Errorf(
+			"realtime voice requires positive per_request channel pricing for model %s",
+			OpenAIRealtimeVoiceBillingModel,
+		)
+	}
+	return nil
+}
+
+func (s *OpenAIGatewayService) resolveRealtimeVoiceChannelPricing(ctx context.Context, apiKey *APIKey) *ResolvedPricing {
+	if apiKey == nil || apiKey.Group == nil || s.resolver == nil || s.billingService == nil {
+		return nil
+	}
+
+	resolve := func() *ResolvedPricing {
+		resolved := s.resolveOpenAIChannelPricing(ctx, OpenAIRealtimeVoiceBillingModel, apiKey)
+		if resolved == nil || resolved.Mode != BillingModePerRequest {
+			return nil
+		}
+		gid := apiKey.Group.ID
+		cost, err := s.billingService.CalculateCostUnified(CostInput{
+			Ctx:            ctx,
+			Model:          OpenAIRealtimeVoiceBillingModel,
+			GroupID:        &gid,
+			RequestCount:   1,
+			RateMultiplier: 1,
+			Resolver:       s.resolver,
+			Resolved:       resolved,
+		})
+		if err != nil || cost == nil || cost.TotalCost <= 0 {
+			return nil
+		}
+		return resolved
+	}
+
+	if resolved := resolve(); resolved != nil {
+		return resolved
+	}
+	if s.channelService != nil && s.shouldRefreshAudioPricing(apiKey, OpenAIRealtimeVoiceBillingModel) {
+		if err := s.channelService.forceRefreshCache(ctx); err == nil {
+			return resolve()
+		}
+	}
+	return nil
+}
+
+func (s *OpenAIGatewayService) calculateRealtimeVoiceCost(
+	ctx context.Context,
+	apiKey *APIKey,
+	multiplier float64,
+) (*CostBreakdown, error) {
+	resolved := s.resolveRealtimeVoiceChannelPricing(ctx, apiKey)
+	if resolved == nil {
+		return nil, fmt.Errorf(
+			"realtime voice requires positive per_request channel pricing for model %s",
+			OpenAIRealtimeVoiceBillingModel,
+		)
+	}
+	gid := apiKey.Group.ID
+	return s.billingService.CalculateCostUnified(CostInput{
+		Ctx:            ctx,
+		Model:          OpenAIRealtimeVoiceBillingModel,
+		GroupID:        &gid,
+		RequestCount:   1,
+		RateMultiplier: multiplier,
+		Resolver:       s.resolver,
+		Resolved:       resolved,
+	})
 }
 
 func (r *OpenAIAudioTranscriptionRequest) StickySessionSeed() string {
@@ -571,6 +767,207 @@ func (s *OpenAIGatewayService) ParseOpenAIAudioTranscriptionRequest(c *gin.Conte
 	return parsed, nil
 }
 
+// ParseOpenAIRealtimeVoiceCallRequest accepts only ChatGPT/OpenAI's bounded
+// WebRTC signaling form (sdp + session). Audio packets are never part of this
+// HTTP request and are sent directly by the negotiated peer connection.
+func (s *OpenAIGatewayService) ParseOpenAIRealtimeVoiceCallRequest(
+	c *gin.Context,
+	explicitMode string,
+) (*OpenAIRealtimeVoiceCallRequest, error) {
+	if c == nil || c.Request == nil {
+		return nil, fmt.Errorf("missing request context")
+	}
+	if c.Request.ContentLength > realtimeVoiceCallMaxRequestSize {
+		return nil, &http.MaxBytesError{Limit: realtimeVoiceCallMaxRequestSize}
+	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, realtimeVoiceCallMaxRequestSize)
+
+	contentType := strings.TrimSpace(c.GetHeader("Content-Type"))
+	mediaType, params, err := mime.ParseMediaType(contentType)
+	if err != nil || !strings.EqualFold(mediaType, "multipart/form-data") {
+		return nil, fmt.Errorf("Content-Type must be multipart/form-data")
+	}
+	boundary := strings.TrimSpace(params["boundary"])
+	if boundary == "" {
+		return nil, fmt.Errorf("multipart boundary is required")
+	}
+
+	body, err := pkghttputil.ReadRequestBodyWithPrealloc(c.Request)
+	if err != nil {
+		return nil, err
+	}
+	if len(body) == 0 {
+		return nil, fmt.Errorf("request body is empty")
+	}
+
+	parsed := &OpenAIRealtimeVoiceCallRequest{}
+	reader := multipart.NewReader(bytes.NewReader(body), boundary)
+	for {
+		part, partErr := reader.NextPart()
+		if partErr == io.EOF {
+			break
+		}
+		if partErr != nil {
+			return nil, fmt.Errorf("read multipart body: %w", partErr)
+		}
+
+		name := strings.TrimSpace(part.FormName())
+		if strings.TrimSpace(part.FileName()) != "" {
+			_ = part.Close()
+			return nil, fmt.Errorf("file uploads are not allowed in realtime signaling")
+		}
+		var limit int64
+		switch name {
+		case "sdp":
+			if parsed.SDP != nil {
+				_ = part.Close()
+				return nil, fmt.Errorf("only one sdp field is supported")
+			}
+			limit = realtimeVoiceSDPMaxSize
+		case "session":
+			if parsed.Session != nil {
+				_ = part.Close()
+				return nil, fmt.Errorf("only one session field is supported")
+			}
+			limit = realtimeVoiceSessionMaxSize
+		default:
+			_ = part.Close()
+			return nil, fmt.Errorf("unsupported realtime multipart field %q", name)
+		}
+
+		value, readErr := io.ReadAll(io.LimitReader(part, limit+1))
+		_ = part.Close()
+		if readErr != nil {
+			return nil, fmt.Errorf("read realtime multipart field %s: %w", name, readErr)
+		}
+		if int64(len(value)) > limit {
+			return nil, fmt.Errorf("realtime multipart field %s exceeds %d bytes: %w", name, limit, &http.MaxBytesError{Limit: limit})
+		}
+		if name == "sdp" {
+			parsed.SDP = value
+		} else {
+			parsed.Session = bytes.TrimSpace(value)
+		}
+	}
+
+	if strings.TrimSpace(string(parsed.SDP)) == "" {
+		return nil, fmt.Errorf("sdp is required")
+	}
+	if !strings.Contains(string(parsed.SDP), "v=0") {
+		return nil, fmt.Errorf("sdp must contain a valid session description")
+	}
+	if len(parsed.Session) == 0 {
+		return nil, fmt.Errorf("session is required")
+	}
+	if !json.Valid(parsed.Session) || !gjson.ParseBytes(parsed.Session).IsObject() {
+		return nil, fmt.Errorf("session must be a valid JSON object")
+	}
+
+	root := gjson.ParseBytes(parsed.Session)
+	voiceMode := strings.ToLower(strings.TrimSpace(root.Get("voice_mode").String()))
+	sessionType := strings.ToLower(strings.TrimSpace(root.Get("session_type").String()))
+	upstreamPath, err := resolveChatGPTRealtimeVoicePath(explicitMode, voiceMode, sessionType)
+	if err != nil {
+		return nil, err
+	}
+	query, err := sanitizeChatGPTRealtimeVoiceQuery(c.Request.URL.Query())
+	if err != nil {
+		return nil, err
+	}
+
+	parsed.UpstreamPath = upstreamPath
+	parsed.Query = query
+	for _, modelPath := range []string{"model", "requested_default_model", "model_slug"} {
+		if value := strings.TrimSpace(root.Get(modelPath).String()); value != "" {
+			parsed.Model = value
+			break
+		}
+	}
+	if parsed.Model == "" {
+		parsed.Model = OpenAIRealtimeVoiceBillingModel
+	}
+	return parsed, nil
+}
+
+func resolveChatGPTRealtimeVoicePath(explicitMode, voiceMode, sessionType string) (string, error) {
+	mode := strings.ToLower(strings.TrimSpace(explicitMode))
+	if mode == "" {
+		switch {
+		case sessionType == "wm" || sessionType == "wingman" || voiceMode == "wingman":
+			mode = "wm"
+		case voiceMode == "standard":
+			mode = "vps"
+		default:
+			mode = "vp"
+		}
+	}
+	switch mode {
+	case "vp", "advanced":
+		return chatgptRealtimeVoiceAdvancedPath, nil
+	case "vps", "standard":
+		return chatgptRealtimeVoiceStandardPath, nil
+	case "wm", "wingman":
+		return chatgptRealtimeVoiceWingmanPath, nil
+	default:
+		return "", fmt.Errorf("unsupported realtime voice mode %q", explicitMode)
+	}
+}
+
+func sanitizeChatGPTRealtimeVoiceQuery(input url.Values) (string, error) {
+	output := make(url.Values)
+	for key, values := range input {
+		if len(values) != 1 {
+			return "", fmt.Errorf("realtime query parameter %s must be specified once", key)
+		}
+		value := strings.TrimSpace(values[0])
+		switch key {
+		case "dcid":
+			if value == "" {
+				continue
+			}
+			dcid, err := strconv.ParseUint(value, 10, 16)
+			if err != nil {
+				return "", fmt.Errorf("invalid realtime dcid")
+			}
+			output.Set(key, strconv.FormatUint(dcid, 10))
+		case "log_call", "instant_connect", "refresh":
+			switch strings.ToLower(value) {
+			case "1", "true":
+				output.Set(key, "1")
+			case "", "0", "false":
+			default:
+				return "", fmt.Errorf("invalid realtime query parameter %s", key)
+			}
+		case "ufrag":
+			if value == "" || len(value) > 128 || !isSafeRealtimeICEUfrag(value) {
+				return "", fmt.Errorf("invalid realtime ufrag")
+			}
+			output.Set(key, value)
+		default:
+			return "", fmt.Errorf("unsupported realtime query parameter %q", key)
+		}
+	}
+	if output.Get("dcid") == "" {
+		output.Set("dcid", "0")
+	}
+	return output.Encode(), nil
+}
+
+func isSafeRealtimeICEUfrag(value string) bool {
+	for _, ch := range value {
+		if ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9' {
+			continue
+		}
+		switch ch {
+		case '+', '/', '-', '_', '.':
+			continue
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 func inspectAudioTranscriptionPart(part io.Reader) (int64, time.Duration, error) {
 	tempFile, err := os.CreateTemp("", "sub2api-audio-duration-*")
 	if err != nil {
@@ -591,6 +988,323 @@ func inspectAudioTranscriptionPart(part io.Reader) (int64, time.Duration, error)
 		return 0, 0, fmt.Errorf("rewind temporary audio file: %w", err)
 	}
 	return fileSize, detectAudioDurationReader(tempFile, fileSize), nil
+}
+
+// ForwardOAuthRealtimeVoiceToken obtains ChatGPT's short-lived voice session
+// credentials. This is only the control-plane bootstrap: no audio bytes pass
+// through this method or remain resident in gateway memory.
+func (s *OpenAIGatewayService) ForwardOAuthRealtimeVoiceToken(
+	ctx context.Context,
+	c *gin.Context,
+	account *Account,
+) (*OpenAIRealtimeVoiceTokenResult, error) {
+	if account == nil || !account.IsOpenAI() || account.Type != AccountTypeOAuth {
+		return nil, fmt.Errorf("an OpenAI OAuth account is required")
+	}
+	if s.httpUpstream == nil {
+		return nil, fmt.Errorf("HTTP upstream is not configured")
+	}
+
+	token, _, err := s.GetAccessToken(ctx, account)
+	if err != nil {
+		return nil, err
+	}
+	upstreamReq, err := buildChatGPTRealtimeVoiceTokenRequest(ctx, c, account, token)
+	if err != nil {
+		return nil, err
+	}
+
+	proxyURL := ""
+	if account.ProxyID != nil && account.Proxy != nil {
+		proxyURL = account.Proxy.URL()
+	}
+	upstreamStart := time.Now()
+	resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
+	if c != nil {
+		SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
+	}
+	if err != nil {
+		safeErr := sanitizeUpstreamErrorMessage(err.Error())
+		if c != nil {
+			setOpsUpstreamError(c, 0, safeErr, "")
+			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+				Platform:    account.Platform,
+				AccountID:   account.ID,
+				AccountName: account.Name,
+				UpstreamURL: safeUpstreamURL(upstreamReq.URL.String()),
+				Kind:        "request_error",
+				Message:     safeErr,
+			})
+		}
+		return nil, fmt.Errorf("upstream request failed: %s", safeErr)
+	}
+	if resp == nil {
+		return nil, fmt.Errorf("upstream returned an empty response")
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, realtimeVoiceTokenMaxSize+1))
+	if readErr != nil {
+		return nil, fmt.Errorf("read realtime voice token response: %w", readErr)
+	}
+	if len(body) > realtimeVoiceTokenMaxSize {
+		return nil, fmt.Errorf("realtime voice token response exceeds %d bytes", realtimeVoiceTokenMaxSize)
+	}
+
+	if resp.StatusCode >= http.StatusBadRequest {
+		upstreamMsg := sanitizeUpstreamErrorMessage(strings.TrimSpace(extractUpstreamErrorMessage(body)))
+		if c != nil {
+			setOpsUpstreamError(c, resp.StatusCode, upstreamMsg, resp.Header.Get("x-request-id"))
+			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+				Platform:           account.Platform,
+				AccountID:          account.ID,
+				AccountName:        account.Name,
+				UpstreamStatusCode: resp.StatusCode,
+				UpstreamRequestID:  resp.Header.Get("x-request-id"),
+				UpstreamURL:        safeUpstreamURL(upstreamReq.URL.String()),
+				Kind:               "failover",
+				Message:            upstreamMsg,
+			})
+		}
+		if s.shouldFailoverOpenAIUpstreamResponse(resp.StatusCode, upstreamMsg, body) {
+			resp.Body = io.NopCloser(bytes.NewReader(body))
+			s.handleFailoverSideEffects(ctx, resp, account)
+			return nil, &UpstreamFailoverError{
+				StatusCode:             resp.StatusCode,
+				ResponseBody:           body,
+				RetryableOnSameAccount: account.IsPoolMode() && isPoolModeRetryableStatus(resp.StatusCode),
+			}
+		}
+		return nil, fmt.Errorf("ChatGPT voice token upstream returned status %d: %s", resp.StatusCode, upstreamMsg)
+	}
+
+	if !json.Valid(body) || strings.TrimSpace(gjson.GetBytes(body, "token").String()) == "" {
+		return nil, fmt.Errorf("ChatGPT voice token response is missing a valid token")
+	}
+	contentType := strings.TrimSpace(resp.Header.Get("Content-Type"))
+	if contentType == "" {
+		contentType = "application/json"
+	}
+	return &OpenAIRealtimeVoiceTokenResult{
+		Body:            body,
+		ContentType:     contentType,
+		ResponseHeaders: resp.Header.Clone(),
+	}, nil
+}
+
+func buildChatGPTRealtimeVoiceTokenRequest(
+	ctx context.Context,
+	c *gin.Context,
+	account *Account,
+	token string,
+) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, chatgptRealtimeVoiceTokenURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Host = "chatgpt.com"
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	if accountID := account.GetChatGPTAccountID(); accountID != "" {
+		req.Header.Set("chatgpt-account-id", accountID)
+	}
+	if c != nil {
+		if proofToken := strings.TrimSpace(c.GetHeader("OpenAI-Sentinel-Proof-Token")); proofToken != "" {
+			req.Header.Set("OpenAI-Sentinel-Proof-Token", proofToken)
+		}
+		if originator := strings.TrimSpace(c.GetHeader("Originator")); originator != "" {
+			req.Header.Set("Originator", originator)
+		}
+		if userAgent := strings.TrimSpace(c.GetHeader("User-Agent")); openai.IsCodexCLIRequest(userAgent) {
+			req.Header.Set("User-Agent", userAgent)
+		}
+	}
+	if req.Header.Get("Originator") == "" {
+		req.Header.Set("Originator", "Codex Desktop")
+	}
+	if !openai.IsCodexCLIRequest(req.Header.Get("User-Agent")) {
+		req.Header.Set("User-Agent", codexCLIUserAgent)
+	}
+	return req, nil
+}
+
+// ForwardOAuthRealtimeVoiceCall proxies only the bounded WebRTC signaling
+// exchange. Once the SDP answer is applied by the client, microphone and model
+// audio travel directly over ICE/DTLS/SRTP and never cross this service.
+func (s *OpenAIGatewayService) ForwardOAuthRealtimeVoiceCall(
+	ctx context.Context,
+	c *gin.Context,
+	account *Account,
+	parsed *OpenAIRealtimeVoiceCallRequest,
+) (*OpenAIRealtimeVoiceCallResult, error) {
+	if parsed == nil {
+		return nil, fmt.Errorf("parsed realtime voice call request is required")
+	}
+	if account == nil || !account.IsOpenAI() || account.Type != AccountTypeOAuth {
+		return nil, fmt.Errorf("an OpenAI OAuth account is required")
+	}
+	if s.httpUpstream == nil {
+		return nil, fmt.Errorf("HTTP upstream is not configured")
+	}
+
+	requestBody, contentType, err := buildChatGPTRealtimeVoiceCallMultipart(parsed)
+	if err != nil {
+		return nil, err
+	}
+	token, _, err := s.GetAccessToken(ctx, account)
+	if err != nil {
+		return nil, err
+	}
+	upstreamReq, err := buildChatGPTRealtimeVoiceCallRequest(ctx, c, account, parsed, requestBody, contentType, token)
+	if err != nil {
+		return nil, err
+	}
+
+	proxyURL := ""
+	if account.ProxyID != nil && account.Proxy != nil {
+		proxyURL = account.Proxy.URL()
+	}
+	upstreamStart := time.Now()
+	resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
+	if c != nil {
+		SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
+	}
+	if err != nil {
+		safeErr := sanitizeUpstreamErrorMessage(err.Error())
+		if c != nil {
+			setOpsUpstreamError(c, 0, safeErr, "")
+			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+				Platform:    account.Platform,
+				AccountID:   account.ID,
+				AccountName: account.Name,
+				UpstreamURL: safeUpstreamURL(upstreamReq.URL.String()),
+				Kind:        "request_error",
+				Message:     safeErr,
+			})
+		}
+		return nil, fmt.Errorf("upstream request failed: %s", safeErr)
+	}
+	if resp == nil {
+		return nil, fmt.Errorf("upstream returned an empty response")
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, realtimeVoiceCallMaxResponseSize+1))
+	if readErr != nil {
+		return nil, fmt.Errorf("read realtime voice signaling response: %w", readErr)
+	}
+	if len(body) > realtimeVoiceCallMaxResponseSize {
+		return nil, fmt.Errorf("realtime voice signaling response exceeds %d bytes", realtimeVoiceCallMaxResponseSize)
+	}
+
+	if resp.StatusCode >= http.StatusBadRequest {
+		upstreamMsg := sanitizeUpstreamErrorMessage(strings.TrimSpace(extractUpstreamErrorMessage(body)))
+		if c != nil {
+			setOpsUpstreamError(c, resp.StatusCode, upstreamMsg, resp.Header.Get("x-request-id"))
+			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+				Platform:           account.Platform,
+				AccountID:          account.ID,
+				AccountName:        account.Name,
+				UpstreamStatusCode: resp.StatusCode,
+				UpstreamRequestID:  resp.Header.Get("x-request-id"),
+				UpstreamURL:        safeUpstreamURL(upstreamReq.URL.String()),
+				Kind:               "failover",
+				Message:            upstreamMsg,
+			})
+		}
+		if s.shouldFailoverOpenAIUpstreamResponse(resp.StatusCode, upstreamMsg, body) {
+			resp.Body = io.NopCloser(bytes.NewReader(body))
+			s.handleFailoverSideEffects(ctx, resp, account)
+			return nil, &UpstreamFailoverError{
+				StatusCode:             resp.StatusCode,
+				ResponseBody:           body,
+				RetryableOnSameAccount: account.IsPoolMode() && isPoolModeRetryableStatus(resp.StatusCode),
+			}
+		}
+	}
+
+	responseContentType := strings.TrimSpace(resp.Header.Get("Content-Type"))
+	if responseContentType == "" {
+		if resp.StatusCode >= http.StatusBadRequest {
+			responseContentType = "application/json"
+		} else {
+			responseContentType = "application/sdp"
+		}
+	}
+	return &OpenAIRealtimeVoiceCallResult{
+		StatusCode:      resp.StatusCode,
+		Body:            body,
+		ContentType:     responseContentType,
+		ResponseHeaders: resp.Header.Clone(),
+	}, nil
+}
+
+func buildChatGPTRealtimeVoiceCallMultipart(parsed *OpenAIRealtimeVoiceCallRequest) ([]byte, string, error) {
+	if parsed == nil {
+		return nil, "", fmt.Errorf("parsed realtime voice call request is required")
+	}
+	var buffer bytes.Buffer
+	writer := multipart.NewWriter(&buffer)
+	if err := writer.WriteField("sdp", string(parsed.SDP)); err != nil {
+		return nil, "", fmt.Errorf("write realtime sdp field: %w", err)
+	}
+	if err := writer.WriteField("session", string(parsed.Session)); err != nil {
+		return nil, "", fmt.Errorf("write realtime session field: %w", err)
+	}
+	if err := writer.Close(); err != nil {
+		return nil, "", fmt.Errorf("finalize realtime signaling body: %w", err)
+	}
+	if buffer.Len() > realtimeVoiceCallMaxRequestSize {
+		return nil, "", fmt.Errorf("realtime signaling body exceeds %d bytes", realtimeVoiceCallMaxRequestSize)
+	}
+	return buffer.Bytes(), writer.FormDataContentType(), nil
+}
+
+func buildChatGPTRealtimeVoiceCallRequest(
+	ctx context.Context,
+	c *gin.Context,
+	account *Account,
+	parsed *OpenAIRealtimeVoiceCallRequest,
+	body []byte,
+	contentType string,
+	token string,
+) (*http.Request, error) {
+	targetURL := chatgptRealtimeVoiceBaseURL + parsed.UpstreamPath
+	if parsed.Query != "" {
+		targetURL += "?" + parsed.Query
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Host = "chatgpt.com"
+	req.Header.Set("Accept", "application/sdp, text/plain, application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", contentType)
+	if accountID := account.GetChatGPTAccountID(); accountID != "" {
+		req.Header.Set("chatgpt-account-id", accountID)
+	}
+	if c != nil {
+		if proofToken := strings.TrimSpace(c.GetHeader("OpenAI-Sentinel-Proof-Token")); proofToken != "" {
+			req.Header.Set("OpenAI-Sentinel-Proof-Token", proofToken)
+		}
+		if originator := strings.TrimSpace(c.GetHeader("Originator")); originator != "" {
+			req.Header.Set("Originator", originator)
+		}
+		if userAgent := strings.TrimSpace(c.GetHeader("User-Agent")); openai.IsCodexCLIRequest(userAgent) {
+			req.Header.Set("User-Agent", userAgent)
+		}
+	}
+	if customUA := strings.TrimSpace(account.GetOpenAIUserAgent()); customUA != "" {
+		req.Header.Set("User-Agent", customUA)
+	}
+	if req.Header.Get("Originator") == "" {
+		req.Header.Set("Originator", "Codex Desktop")
+	}
+	if strings.TrimSpace(req.Header.Get("User-Agent")) == "" {
+		req.Header.Set("User-Agent", codexCLIUserAgent)
+	}
+	return req, nil
 }
 
 func (s *OpenAIGatewayService) ForwardAudioTranscription(

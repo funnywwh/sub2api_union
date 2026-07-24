@@ -289,7 +289,14 @@ func (h *ConcurrencyHelper) waitForSlotWithPing(c *gin.Context, slotType string,
 
 // waitForSlotWithPingTimeout waits for a concurrency slot with a custom timeout.
 func (h *ConcurrencyHelper) waitForSlotWithPingTimeout(c *gin.Context, slotType string, id int64, maxConcurrency int, timeout time.Duration, isStream bool, streamStarted *bool, tryImmediate bool) (func(), error) {
-	ctx, cancel := context.WithTimeout(c.Request.Context(), timeout)
+	return h.waitForSlotWithPingTimeoutContext(c, c.Request.Context(), slotType, id, maxConcurrency, timeout, isStream, streamStarted, tryImmediate)
+}
+
+func (h *ConcurrencyHelper) waitForSlotWithPingTimeoutContext(c *gin.Context, acquireCtx context.Context, slotType string, id int64, maxConcurrency int, timeout time.Duration, isStream bool, streamStarted *bool, tryImmediate bool) (func(), error) {
+	if acquireCtx == nil {
+		acquireCtx = c.Request.Context()
+	}
+	ctx, cancel := context.WithTimeout(acquireCtx, timeout)
 	defer cancel()
 
 	acquireSlot := func() (*service.AcquireResult, error) {
@@ -374,6 +381,13 @@ func (h *ConcurrencyHelper) waitForSlotWithPingTimeout(c *gin.Context, slotType 
 // AcquireAccountSlotWithWaitTimeout acquires an account slot with a custom timeout (keeps SSE ping).
 func (h *ConcurrencyHelper) AcquireAccountSlotWithWaitTimeout(c *gin.Context, accountID int64, maxConcurrency int, timeout time.Duration, isStream bool, streamStarted *bool) (func(), error) {
 	return h.waitForSlotWithPingTimeout(c, "account", accountID, maxConcurrency, timeout, isStream, streamStarted, true)
+}
+
+// AcquireAccountSlotWithWaitTimeoutContext is the context-preserving variant
+// used by fixed-TTL account leases. The supplied context controls both the
+// wait cancellation and the request ID semantics of every acquisition retry.
+func (h *ConcurrencyHelper) AcquireAccountSlotWithWaitTimeoutContext(c *gin.Context, acquireCtx context.Context, accountID int64, maxConcurrency int, timeout time.Duration, isStream bool, streamStarted *bool) (func(), error) {
+	return h.waitForSlotWithPingTimeoutContext(c, acquireCtx, "account", accountID, maxConcurrency, timeout, isStream, streamStarted, true)
 }
 
 // nextBackoff 计算下一次退避时间

@@ -465,6 +465,18 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/admin/realtime-voice-test',
+    name: 'AdminRealtimeVoiceTest',
+    component: () => import('@/views/admin/RealtimeVoiceTestView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'Realtime Voice Test',
+      titleKey: 'admin.realtimeVoiceTest.title',
+      descriptionKey: 'admin.realtimeVoiceTest.description'
+    }
+  },
+  {
     path: '/admin/announcements',
     name: 'AdminAnnouncements',
     component: () => import('@/views/admin/AnnouncementsView.vue'),

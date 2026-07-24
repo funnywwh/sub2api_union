@@ -1110,10 +1110,10 @@ func TestOpenAIGatewayServiceRecordUsage_SimpleModePersistsUnknownAudioDuration(
 
 	err := svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
 		Result: &OpenAIForwardResult{
-			RequestID:        "resp_simple_audio_unknown_duration",
-			Model:            "gpt-4o-mini-transcribe",
-			Duration:         time.Second,
-			ForceUsageRecord: true,
+			RequestID:         "resp_simple_audio_unknown_duration",
+			Model:             "gpt-4o-mini-transcribe",
+			Duration:          time.Second,
+			ForceUsageRecord:  true,
 			ForceAudioBilling: true,
 		},
 		APIKey:  &APIKey{ID: 1001},
@@ -1127,6 +1127,55 @@ func TestOpenAIGatewayServiceRecordUsage_SimpleModePersistsUnknownAudioDuration(
 	require.Zero(t, usageRepo.lastLog.ActualCost)
 	require.Equal(t, 0, userRepo.deductCalls)
 	require.Equal(t, 0, subRepo.incrementCalls)
+}
+
+func TestOpenAIGatewayServiceRecordUsage_RealtimeVoiceBillsOncePerSession(t *testing.T) {
+	price := 0.12
+	groupID := int64(100)
+	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+	billingRepo := &openAIRecordUsageBillingRepoStub{}
+	userRepo := &openAIRecordUsageUserRepoStub{}
+	subRepo := &openAIRecordUsageSubRepoStub{}
+	svc := newOpenAIRecordUsageServiceWithBillingRepoForTest(usageRepo, billingRepo, userRepo, subRepo, nil)
+	resolver := newOpenAIAudioTranscriptionPricingResolver(t, []ChannelModelPricing{{
+		Platform:        PlatformOpenAI,
+		Models:          []string{OpenAIRealtimeVoiceBillingModel},
+		BillingMode:     BillingModePerRequest,
+		PerRequestPrice: &price,
+	}})
+	svc.resolver = resolver
+	svc.billingService = resolver.billingService
+	svc.channelService = resolver.channelService
+
+	err := svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
+		Result: &OpenAIForwardResult{
+			RequestID:              "realtime-call:1000:semantic-offer-hash",
+			Model:                  "gpt-4o-realtime",
+			BillingModel:           OpenAIRealtimeVoiceBillingModel,
+			Duration:               time.Second,
+			ForceUsageRecord:       true,
+			ForcePerRequestBilling: true,
+		},
+		APIKey: &APIKey{
+			ID:      1000,
+			GroupID: &groupID,
+			Group:   &Group{ID: groupID, RateMultiplier: 1},
+		},
+		User:               &User{ID: 2000},
+		Account:            &Account{ID: 3000, Platform: PlatformOpenAI, Type: AccountTypeOAuth},
+		RequestPayloadHash: "semantic-offer-hash",
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 1, billingRepo.calls)
+	require.NotNil(t, billingRepo.lastCmd)
+	require.Equal(t, "realtime-call:1000:semantic-offer-hash", billingRepo.lastCmd.RequestID)
+	require.InDelta(t, price, billingRepo.lastCmd.BalanceCost, 1e-12)
+	require.NotNil(t, usageRepo.lastLog)
+	require.Equal(t, "gpt-4o-realtime", usageRepo.lastLog.Model)
+	require.NotNil(t, usageRepo.lastLog.BillingMode)
+	require.Equal(t, string(BillingModePerRequest), *usageRepo.lastLog.BillingMode)
+	require.InDelta(t, price, usageRepo.lastLog.ActualCost, 1e-12)
 }
 
 func TestOpenAIGatewayServiceRecordUsage_ImageOnlyUsageStillPersists(t *testing.T) {

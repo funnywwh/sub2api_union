@@ -134,3 +134,63 @@ func TestGatewayRoutesOpenAIAudioTranscriptionsPathsAreRegistered(t *testing.T) 
 		require.NotEqual(t, http.StatusNotFound, w.Code, "path=%s should hit OpenAI audio transcriptions handler", path)
 	}
 }
+
+func TestGatewayRoutesRealtimeVoiceTokenPathsAreRegistered(t *testing.T) {
+	router := newGatewayRoutesTestRouter()
+
+	for _, path := range []string{
+		"/v1/realtime/voice_token",
+		"/realtime/voice_token",
+		"/backend-api/voice_token",
+	} {
+		for _, method := range []string{http.MethodGet, http.MethodPost} {
+			req := httptest.NewRequest(method, path, nil)
+			w := httptest.NewRecorder()
+
+			router.ServeHTTP(w, req)
+			require.NotEqual(t, http.StatusNotFound, w.Code, "method=%s path=%s should hit realtime voice token handler", method, path)
+		}
+	}
+}
+
+func TestGatewayRoutesRealtimeVoiceTokenRejectsNonOpenAIPlatforms(t *testing.T) {
+	router := newGatewayRoutesTestRouterForPlatform(service.PlatformAnthropic)
+	req := httptest.NewRequest(http.MethodGet, "/v1/realtime/voice_token", nil)
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+	require.Equal(t, http.StatusNotFound, w.Code)
+	require.Contains(t, w.Body.String(), "Realtime voice is not supported for this platform")
+}
+
+func TestGatewayRoutesRealtimeVoiceCallPathsAreRegistered(t *testing.T) {
+	router := newGatewayRoutesTestRouter()
+
+	for _, path := range []string{
+		"/v1/realtime/calls",
+		"/v1/realtime/vp",
+		"/v1/realtime/vps",
+		"/v1/realtime/wm",
+		"/realtime/calls",
+		"/realtime/vp",
+		"/realtime/vps",
+		"/realtime/wm",
+	} {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader("not-a-valid-multipart-body"))
+		req.Header.Set("Content-Type", "multipart/form-data; boundary=test")
+		w := httptest.NewRecorder()
+
+		router.ServeHTTP(w, req)
+		require.NotEqual(t, http.StatusNotFound, w.Code, "path=%s should hit realtime voice call handler", path)
+	}
+}
+
+func TestGatewayRoutesRealtimeVoiceCallRejectsNonOpenAIPlatforms(t *testing.T) {
+	router := newGatewayRoutesTestRouterForPlatform(service.PlatformAnthropic)
+	req := httptest.NewRequest(http.MethodPost, "/v1/realtime/calls", nil)
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+	require.Equal(t, http.StatusNotFound, w.Code)
+	require.Contains(t, w.Body.String(), "Realtime voice is not supported for this platform")
+}

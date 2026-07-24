@@ -57,12 +57,13 @@ var (
 		-- 清理过期槽位
 		redis.call('ZREMRANGEBYSCORE', key, '-inf', expireBefore)
 
-		-- 检查是否已存在（支持重试场景刷新时间戳）
+		-- 检查是否已存在（支持重试场景刷新时间戳）。返回 2 让
+		-- 固定租约调用方知道本次只复用了租约，不拥有删除权。
 		local exists = redis.call('ZSCORE', key, requestID)
 		if exists ~= false then
 			redis.call('ZADD', key, now, requestID)
 			redis.call('EXPIRE', key, ttl)
-			return 1
+			return 2
 		end
 
 		-- 检查是否达到并发上限
@@ -166,17 +167,24 @@ var (
 	`)
 
 	// startupCleanupScript 清理非当前进程前缀的槽位成员。
-	// KEYS 是有序集合键列表，ARGV[1] 是当前进程前缀，ARGV[2] 是槽位 TTL。
-	// 遍历每个 KEYS[i]，移除前缀不匹配的成员，清空后删 key，否则刷新 EXPIRE。
+	// KEYS 是有序集合键列表，ARGV[1] 是当前进程前缀，ARGV[2] 是槽位 TTL，
+	// ARGV[3] 是允许跨进程保留到 TTL 的租约前缀（可为空）。
+	// 遍历每个 KEYS[i]，移除非当前进程且非租约的成员，清空后删 key，否则刷新 EXPIRE。
 	startupCleanupScript = redis.NewScript(`
 		local activePrefix = ARGV[1]
 		local slotTTL = tonumber(ARGV[2])
+		local persistentPrefix = ARGV[3]
 		local removed = 0
+		local timeResult = redis.call('TIME')
+		local expireBefore = tonumber(timeResult[1]) - slotTTL
 		for i = 1, #KEYS do
 			local key = KEYS[i]
+			removed = removed + redis.call('ZREMRANGEBYSCORE', key, '-inf', expireBefore)
 			local members = redis.call('ZRANGE', key, 0, -1)
 			for _, member in ipairs(members) do
-				if string.sub(member, 1, string.len(activePrefix)) ~= activePrefix then
+				local belongsToActiveProcess = string.sub(member, 1, string.len(activePrefix)) == activePrefix
+				local isPersistentLease = persistentPrefix ~= '' and string.sub(member, 1, string.len(persistentPrefix)) == persistentPrefix
+				if not belongsToActiveProcess and not isPersistentLease then
 					removed = removed + redis.call('ZREM', key, member)
 				end
 			end
@@ -239,7 +247,19 @@ func (c *concurrencyCache) AcquireAccountSlot(ctx context.Context, accountID int
 	if err != nil {
 		return false, err
 	}
-	return result == 1, nil
+	return result > 0, nil
+}
+
+// AcquireAccountSlotLease reports whether this call created the persistent
+// lease. Reusers can then avoid deleting a slot owned by an earlier successful
+// direct-media session.
+func (c *concurrencyCache) AcquireAccountSlotLease(ctx context.Context, accountID int64, maxConcurrency int, requestID string) (bool, bool, error) {
+	key := accountSlotKey(accountID)
+	result, err := acquireScript.Run(ctx, c.rdb, []string{key}, maxConcurrency, c.slotTTLSeconds, requestID).Int()
+	if err != nil {
+		return false, false, err
+	}
+	return result > 0, result == 1, nil
 }
 
 func (c *concurrencyCache) ReleaseAccountSlot(ctx context.Context, accountID int64, requestID string) error {
@@ -499,10 +519,17 @@ func (c *concurrencyCache) CleanupStaleProcessSlots(ctx context.Context, activeR
 		return nil
 	}
 
-	// 1. 清理有序集合中非当前进程前缀的成员
-	slotPatterns := []string{accountSlotKeyPrefix + "*", userSlotKeyPrefix + "*"}
-	for _, pattern := range slotPatterns {
-		if err := c.cleanupSlotsByPattern(ctx, pattern, activeRequestPrefix); err != nil {
+	// 1. 清理有序集合中非当前进程前缀的成员。直接媒体会话的账号
+	// 租约不绑定进程，保留到固定槽位 TTL；用户槽仍按进程清理。
+	slotPatterns := []struct {
+		pattern          string
+		persistentPrefix string
+	}{
+		{pattern: accountSlotKeyPrefix + "*", persistentPrefix: service.PersistentAccountSlotLeaseRequestPrefix},
+		{pattern: userSlotKeyPrefix + "*"},
+	}
+	for _, item := range slotPatterns {
+		if err := c.cleanupSlotsByPattern(ctx, item.pattern, activeRequestPrefix, item.persistentPrefix); err != nil {
 			return err
 		}
 	}
@@ -519,7 +546,7 @@ func (c *concurrencyCache) CleanupStaleProcessSlots(ctx context.Context, activeR
 }
 
 // cleanupSlotsByPattern 扫描匹配 pattern 的有序集合键，批量调用 Lua 脚本清理非当前进程成员。
-func (c *concurrencyCache) cleanupSlotsByPattern(ctx context.Context, pattern, activePrefix string) error {
+func (c *concurrencyCache) cleanupSlotsByPattern(ctx context.Context, pattern, activePrefix, persistentPrefix string) error {
 	const scanCount = 200
 	var cursor uint64
 	for {
@@ -528,7 +555,7 @@ func (c *concurrencyCache) cleanupSlotsByPattern(ctx context.Context, pattern, a
 			return fmt.Errorf("scan %s: %w", pattern, err)
 		}
 		if len(keys) > 0 {
-			_, err := startupCleanupScript.Run(ctx, c.rdb, keys, activePrefix, c.slotTTLSeconds).Result()
+			_, err := startupCleanupScript.Run(ctx, c.rdb, keys, activePrefix, c.slotTTLSeconds, persistentPrefix).Result()
 			if err != nil {
 				return fmt.Errorf("cleanup slots %s: %w", pattern, err)
 			}
