@@ -141,6 +141,18 @@
               <dd class="font-mono text-gray-900 dark:text-gray-100">{{ signalingState }}</dd>
             </div>
             <div class="flex items-center justify-between gap-4 border-b border-gray-100 pb-3 dark:border-dark-700">
+              <dt class="text-gray-500 dark:text-gray-400">{{ t('admin.realtimeVoiceTest.iceGathering') }}</dt>
+              <dd class="font-mono text-gray-900 dark:text-gray-100">{{ iceGatheringState }}</dd>
+            </div>
+            <div class="flex items-center justify-between gap-4 border-b border-gray-100 pb-3 dark:border-dark-700">
+              <dt class="text-gray-500 dark:text-gray-400">{{ t('admin.realtimeVoiceTest.dtlsState') }}</dt>
+              <dd class="font-mono text-gray-900 dark:text-gray-100">{{ dtlsState }}</dd>
+            </div>
+            <div class="flex items-center justify-between gap-4 border-b border-gray-100 pb-3 dark:border-dark-700">
+              <dt class="text-gray-500 dark:text-gray-400">{{ t('admin.realtimeVoiceTest.selectedCandidatePair') }}</dt>
+              <dd class="max-w-[65%] break-all text-right font-mono text-xs text-gray-900 dark:text-gray-100">{{ selectedCandidatePair }}</dd>
+            </div>
+            <div class="flex items-center justify-between gap-4 border-b border-gray-100 pb-3 dark:border-dark-700">
               <dt class="text-gray-500 dark:text-gray-400">{{ t('admin.realtimeVoiceTest.duration') }}</dt>
               <dd class="font-mono text-gray-900 dark:text-gray-100">{{ formattedDuration }}</dd>
             </div>
@@ -243,6 +255,8 @@ interface EventLogEntry {
   data: string
 }
 
+type RTCStatsRecord = Record<string, unknown>
+
 const { t } = useI18n()
 
 const apiKey = ref('')
@@ -257,6 +271,9 @@ const elapsedSeconds = ref(0)
 const peerConnectionState = ref('new')
 const iceConnectionState = ref('new')
 const signalingState = ref('stable')
+const iceGatheringState = ref('new')
+const dtlsState = ref('new')
+const selectedCandidatePair = ref('none')
 const transcripts = ref<TranscriptItem[]>([])
 const eventLogs = ref<EventLogEntry[]>([])
 const remoteAudio = ref<HTMLAudioElement | null>(null)
@@ -266,14 +283,18 @@ let peerConnection: RTCPeerConnection | null = null
 let dataChannel: RTCDataChannel | null = null
 let requestController: AbortController | null = null
 let elapsedTimer: ReturnType<typeof setInterval> | null = null
+let statsTimer: ReturnType<typeof setInterval> | null = null
 let disconnectedCleanupTimer: ReturnType<typeof setTimeout> | null = null
 let sessionGeneration = 0
 let nextTranscriptId = 1
 let nextEventId = 1
 let activeAssistantTranscriptId: number | null = null
 let activeUserTranscriptId: number | null = null
+let lastStatsSignature = ''
 
-const endpoint = computed(() => `/v1/realtime/${mode.value}`)
+const clientDeviceId = createIdempotencyKey()
+
+const endpoint = computed(() => `/v1/realtime/${mode.value}?dcid=0`)
 const isActive = computed(() => ['requestingMicrophone', 'signaling', 'connecting'].includes(status.value))
 const hasSession = computed(() => sessionStarting.value || localStream.value !== null)
 const statusLabel = computed(() => t(`admin.realtimeVoiceTest.state.${status.value}`))
@@ -400,12 +421,112 @@ function updatePeerStates(): void {
   peerConnectionState.value = peerConnection.connectionState
   iceConnectionState.value = peerConnection.iceConnectionState
   signalingState.value = peerConnection.signalingState
+  iceGatheringState.value = peerConnection.iceGatheringState
 }
 
 function resetPeerStates(): void {
   peerConnectionState.value = 'new'
   iceConnectionState.value = 'new'
   signalingState.value = 'stable'
+  iceGatheringState.value = 'new'
+  dtlsState.value = 'new'
+  selectedCandidatePair.value = 'none'
+  lastStatsSignature = ''
+}
+
+function statString(record: RTCStatsRecord | undefined, key: string): string {
+  const value = record?.[key]
+  return typeof value === 'string' ? value : ''
+}
+
+function statNumber(record: RTCStatsRecord | undefined, key: string): number {
+  const value = record?.[key]
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0
+}
+
+function describeCandidate(candidate: RTCStatsRecord | undefined): string {
+  if (!candidate) return 'unknown'
+  const kind = statString(candidate, 'candidateType') || 'unknown'
+  const protocol = statString(candidate, 'protocol') || 'unknown'
+  const address = statString(candidate, 'address') || statString(candidate, 'ip')
+  const port = statNumber(candidate, 'port')
+  const endpoint = address ? `${address}${port ? `:${port}` : ''}` : ''
+  return `${kind}/${protocol}${endpoint ? ` ${endpoint}` : ''}`
+}
+
+async function collectPeerStats(pc: RTCPeerConnection, reason: string, force = false): Promise<void> {
+  if (peerConnection !== pc && !force) return
+  try {
+    const report = await pc.getStats()
+    const byId = new Map<string, RTCStatsRecord>()
+    const records: RTCStatsRecord[] = []
+    report.forEach(item => {
+      const record = item as unknown as RTCStatsRecord
+      records.push(record)
+      const id = statString(record, 'id')
+      if (id) byId.set(id, record)
+    })
+
+    const transport = records.find(record => statString(record, 'type') === 'transport')
+    const selectedPairId = statString(transport, 'selectedCandidatePairId')
+    const candidatePairs = records.filter(record => statString(record, 'type') === 'candidate-pair')
+    const mostActivePair = candidatePairs.reduce<RTCStatsRecord | undefined>((current, candidate) => {
+      if (!current) return candidate
+      return statNumber(candidate, 'requestsSent') > statNumber(current, 'requestsSent') ? candidate : current
+    }, undefined)
+    const pair = (selectedPairId ? byId.get(selectedPairId) : undefined)
+      ?? records.find(record => statString(record, 'type') === 'candidate-pair' && record.selected === true)
+      ?? records.find(record => statString(record, 'type') === 'candidate-pair' && record.nominated === true && statString(record, 'state') === 'succeeded')
+      ?? mostActivePair
+    const localCandidate = byId.get(statString(pair, 'localCandidateId'))
+    const remoteCandidate = byId.get(statString(pair, 'remoteCandidateId'))
+    const currentDtlsState = statString(transport, 'dtlsState') || 'new'
+
+    dtlsState.value = currentDtlsState
+    selectedCandidatePair.value = pair
+      ? `${statString(pair, 'state') || 'unknown'}: ${describeCandidate(localCandidate)} -> ${describeCandidate(remoteCandidate)}`
+      : 'none'
+
+    const snapshot = {
+      reason,
+      connection_state: pc.connectionState,
+      ice_connection_state: pc.iceConnectionState,
+      ice_gathering_state: pc.iceGatheringState,
+      signaling_state: pc.signalingState,
+      dtls_state: currentDtlsState,
+      candidate_pair: pair ? {
+        state: statString(pair, 'state'),
+        nominated: pair.nominated === true,
+        writable: pair.writable === true,
+        requests_sent: statNumber(pair, 'requestsSent'),
+        responses_received: statNumber(pair, 'responsesReceived'),
+        requests_received: statNumber(pair, 'requestsReceived'),
+        responses_sent: statNumber(pair, 'responsesSent'),
+        bytes_sent: statNumber(pair, 'bytesSent'),
+        bytes_received: statNumber(pair, 'bytesReceived'),
+        current_rtt: statNumber(pair, 'currentRoundTripTime'),
+        local: describeCandidate(localCandidate),
+        remote: describeCandidate(remoteCandidate)
+      } : null
+    }
+    const signature = JSON.stringify(snapshot)
+    if (force || signature !== lastStatsSignature) {
+      lastStatsSignature = signature
+      appendEvent('system', 'webrtc.stats', snapshot)
+    }
+  } catch (error) {
+    if (force) appendEvent('system', 'webrtc.stats_error', { message: error instanceof Error ? error.message : String(error) })
+  }
+}
+
+function startStatsTimer(pc: RTCPeerConnection): void {
+  if (statsTimer) clearInterval(statsTimer)
+  statsTimer = setInterval(() => void collectPeerStats(pc, 'periodic'), 2000)
+}
+
+function stopStatsTimer(): void {
+  if (statsTimer) clearInterval(statsTimer)
+  statsTimer = null
 }
 
 function waitForIceGatheringComplete(pc: RTCPeerConnection, timeoutMs = 5000): Promise<void> {
@@ -445,12 +566,13 @@ function clearDisconnectedCleanupTimer(): void {
   disconnectedCleanupTimer = null
 }
 
-function cleanupSession(): void {
+function cleanupSession(preservePeerStates = false): void {
   sessionGeneration += 1
   sessionStarting.value = false
   clearDisconnectedCleanupTimer()
   requestController?.abort()
   requestController = null
+  stopStatsTimer()
   if (dataChannel) {
     dataChannel.onopen = null
     dataChannel.onclose = null
@@ -464,6 +586,9 @@ function cleanupSession(): void {
     peerConnection.ontrack = null
     peerConnection.onconnectionstatechange = null
     peerConnection.oniceconnectionstatechange = null
+    peerConnection.onicegatheringstatechange = null
+    peerConnection.onicecandidate = null
+    peerConnection.onicecandidateerror = null
     peerConnection.onsignalingstatechange = null
     peerConnection.close()
   }
@@ -475,7 +600,7 @@ function cleanupSession(): void {
   activeAssistantTranscriptId = null
   activeUserTranscriptId = null
   stopElapsedTimer()
-  resetPeerStates()
+  if (!preservePeerStates) resetPeerStates()
 }
 
 async function startSession(): Promise<void> {
@@ -532,8 +657,10 @@ async function startSession(): Promise<void> {
 
   try {
     if (generation !== sessionGeneration || !localStream.value) return
-    const pc = new RTCPeerConnection()
+    const pc = new RTCPeerConnection({ bundlePolicy: 'max-bundle' })
     peerConnection = pc
+    updatePeerStates()
+    startStatsTimer(pc)
     localStream.value.getTracks().forEach(track => pc.addTrack(track, localStream.value as MediaStream))
     bindDataChannel(pc.createDataChannel('oai-events'))
 
@@ -549,32 +676,62 @@ async function startSession(): Promise<void> {
       appendEvent('system', 'remote_track', { kind: event.track.kind, id: event.track.id })
     }
     pc.onconnectionstatechange = () => {
-      if (peerConnection !== pc) return
-      updatePeerStates()
-      appendEvent('system', 'peer_connection.state', { state: pc.connectionState })
-      if (pc.connectionState === 'connected') {
-        clearDisconnectedCleanupTimer()
-        sessionStarting.value = false
-        status.value = 'connected'
-      } else if (pc.connectionState === 'failed') {
-        errorMessage.value = t('admin.realtimeVoiceTest.peerConnectionFailed')
-        cleanupSession()
-        status.value = 'failed'
-      } else if (pc.connectionState === 'closed') {
-        cleanupSession()
-        status.value = 'disconnected'
-      } else if (pc.connectionState === 'disconnected') {
-        status.value = 'disconnected'
-        clearDisconnectedCleanupTimer()
-        disconnectedCleanupTimer = setTimeout(() => {
-          if (peerConnection !== pc || pc.connectionState !== 'disconnected') return
-          appendEvent('system', 'peer_connection.disconnect_timeout', { grace_ms: 5000 })
+      void (async () => {
+        if (peerConnection !== pc) return
+        updatePeerStates()
+        appendEvent('system', 'peer_connection.state', { state: pc.connectionState })
+        if (pc.connectionState === 'connected') {
+          clearDisconnectedCleanupTimer()
+          sessionStarting.value = false
+          status.value = 'connected'
+        } else if (pc.connectionState === 'failed') {
+          errorMessage.value = t('admin.realtimeVoiceTest.peerConnectionFailed')
+          await collectPeerStats(pc, 'connection_failed', true)
+          cleanupSession(true)
+          status.value = 'failed'
+        } else if (pc.connectionState === 'closed') {
           cleanupSession()
           status.value = 'disconnected'
-        }, 5000)
-      }
+        } else if (pc.connectionState === 'disconnected') {
+          status.value = 'disconnected'
+          clearDisconnectedCleanupTimer()
+          disconnectedCleanupTimer = setTimeout(() => {
+            void (async () => {
+              if (peerConnection !== pc || pc.connectionState !== 'disconnected') return
+              appendEvent('system', 'peer_connection.disconnect_timeout', { grace_ms: 5000 })
+              await collectPeerStats(pc, 'disconnect_timeout', true)
+              cleanupSession(true)
+              status.value = 'disconnected'
+            })()
+          }, 5000)
+        }
+      })()
     }
-    pc.oniceconnectionstatechange = updatePeerStates
+    pc.oniceconnectionstatechange = () => {
+      updatePeerStates()
+      appendEvent('system', 'ice_connection.state', { state: pc.iceConnectionState })
+      void collectPeerStats(pc, 'ice_state_change')
+    }
+    pc.onicegatheringstatechange = () => {
+      updatePeerStates()
+      appendEvent('system', 'ice_gathering.state', { state: pc.iceGatheringState })
+    }
+    pc.onicecandidate = event => {
+      appendEvent('system', event.candidate ? 'ice_candidate.local' : 'ice_candidate.complete', event.candidate ? {
+        candidate: event.candidate.candidate,
+        sdp_mid: event.candidate.sdpMid,
+        sdp_mline_index: event.candidate.sdpMLineIndex
+      } : {})
+    }
+    pc.onicecandidateerror = event => {
+      appendEvent('system', 'ice_candidate.error', {
+        address: event.address,
+        port: event.port,
+        url: event.url,
+        error_code: event.errorCode,
+        error_text: event.errorText
+      })
+    }
     pc.onsignalingstatechange = updatePeerStates
 
     status.value = 'connecting'
@@ -600,7 +757,10 @@ async function startSession(): Promise<void> {
     })
     const headers: Record<string, string> = {
       Authorization: `Bearer ${apiKey.value.trim()}`,
-      'Idempotency-Key': idempotencyKey
+      'Idempotency-Key': idempotencyKey,
+      'OAI-Language': navigator.language || 'en-US',
+      'OAI-Device-Id': clientDeviceId,
+      'OAI-Session-Id': createIdempotencyKey()
     }
     if (proofToken.value.trim()) headers['OpenAI-Sentinel-Proof-Token'] = proofToken.value.trim()
 
@@ -620,6 +780,7 @@ async function startSession(): Promise<void> {
       status: response.status,
       request_id: response.headers.get('x-request-id') || response.headers.get('openai-request-id'),
       media_path: response.headers.get('x-realtime-media-path'),
+      signaling_path: response.headers.get('x-realtime-signaling-path'),
       sdp_size: answerSdp.length
     })
     await pc.setRemoteDescription({ type: 'answer', sdp: answerSdp })
@@ -637,7 +798,9 @@ async function startSession(): Promise<void> {
     const detail = error instanceof Error ? error.message : String(error)
     errorMessage.value = `${t('admin.realtimeVoiceTest.requestFailed')} ${detail}`.trim()
     appendEvent('system', 'session.error', { message: detail })
-    cleanupSession()
+    const failedPC = peerConnection
+    if (failedPC) await collectPeerStats(failedPC, 'session_error', true)
+    cleanupSession(failedPC !== null)
     status.value = 'failed'
   }
 }

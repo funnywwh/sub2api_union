@@ -339,6 +339,10 @@ func TestForwardAudioTranscriptionOAuthUsesChatGPTBackend(t *testing.T) {
 func TestForwardOAuthRealtimeVoiceTokenUsesChatGPTBootstrap(t *testing.T) {
 	c, _ := newOpenAIAudioTranscriptionTestContext(nil, "application/json")
 	c.Request.Header.Set("OpenAI-Sentinel-Proof-Token", "token-proof")
+	c.Request.Header.Set("OAI-Language", "zh-CN")
+	c.Request.Header.Set("OAI-Device-Id", "device-voice")
+	c.Request.Header.Set("OAI-Session-Id", "session-voice")
+	c.Request.Header.Set("User-Agent", "Mozilla/5.0 RealtimeVoiceTest")
 	upstreamBody := `{"token":"short-lived-token","e2ee_key":"secret-material","url":"https://voice.example.test"}`
 	upstream := &httpUpstreamRecorder{resp: &http.Response{
 		StatusCode: http.StatusOK,
@@ -371,7 +375,18 @@ func TestForwardOAuthRealtimeVoiceTokenUsesChatGPTBootstrap(t *testing.T) {
 	require.Equal(t, "Bearer oauth-token", upstream.lastReq.Header.Get("Authorization"))
 	require.Equal(t, "acct-voice", upstream.lastReq.Header.Get("chatgpt-account-id"))
 	require.Equal(t, "token-proof", upstream.lastReq.Header.Get("OpenAI-Sentinel-Proof-Token"))
-	require.Equal(t, "Codex Desktop", upstream.lastReq.Header.Get("Originator"))
+	require.Empty(t, upstream.lastReq.Header.Get("Originator"))
+	require.Equal(t, chatgptRealtimeVoiceBaseURL, upstream.lastReq.Header.Get("Origin"))
+	require.Equal(t, chatgptRealtimeVoiceBaseURL+"/", upstream.lastReq.Header.Get("Referer"))
+	require.Equal(t, "/backend-api/voice_token", upstream.lastReq.Header.Get("X-OpenAI-Target-Path"))
+	require.Equal(t, "/backend-api/voice_token", upstream.lastReq.Header.Get("X-OpenAI-Target-Route"))
+	require.Equal(t, "zh-CN", upstream.lastReq.Header.Get("OAI-Language"))
+	require.Equal(t, "zh-CN", upstream.lastReq.Header.Get("Accept-Language"))
+	require.Equal(t, "device-voice", upstream.lastReq.Header.Get("OAI-Device-Id"))
+	require.Equal(t, "session-voice", upstream.lastReq.Header.Get("OAI-Session-Id"))
+	require.Equal(t, chatgptRealtimeWebClientVersion, upstream.lastReq.Header.Get("OAI-Client-Version"))
+	require.Equal(t, chatgptRealtimeWebClientBuildNumber, upstream.lastReq.Header.Get("OAI-Client-Build-Number"))
+	require.Equal(t, "Mozilla/5.0 RealtimeVoiceTest", upstream.lastReq.Header.Get("User-Agent"))
 	require.Equal(t, "application/json", upstream.lastReq.Header.Get("Accept"))
 }
 
@@ -381,6 +396,10 @@ func TestForwardOAuthRealtimeVoiceCallUsesBoundedUnifiedWebRTCHandshake(t *testi
 	body, contentType := buildOpenAIRealtimeVoiceCallTestBody(t, offerSDP, sessionJSON)
 	c, _ := newOpenAIRealtimeVoiceCallTestContext("/v1/realtime/calls?dcid=3", body, contentType)
 	c.Request.Header.Set("OpenAI-Sentinel-Proof-Token", "proof-token")
+	c.Request.Header.Set("OAI-Language", "en-US")
+	c.Request.Header.Set("OAI-Device-Id", "device-realtime")
+	c.Request.Header.Set("OAI-Session-Id", "session-realtime")
+	c.Request.Header.Set("User-Agent", "Mozilla/5.0 RealtimeVoiceTest")
 	parsed, err := (&OpenAIGatewayService{}).ParseOpenAIRealtimeVoiceCallRequest(c, "")
 	require.NoError(t, err)
 
@@ -416,11 +435,28 @@ func TestForwardOAuthRealtimeVoiceCallUsesBoundedUnifiedWebRTCHandshake(t *testi
 	require.Equal(t, "Bearer oauth-token", upstream.lastReq.Header.Get("Authorization"))
 	require.Equal(t, "acct-realtime", upstream.lastReq.Header.Get("chatgpt-account-id"))
 	require.Equal(t, "proof-token", upstream.lastReq.Header.Get("OpenAI-Sentinel-Proof-Token"))
+	require.Empty(t, upstream.lastReq.Header.Get("Originator"))
+	require.Equal(t, chatgptRealtimeVoiceBaseURL, upstream.lastReq.Header.Get("Origin"))
+	require.Equal(t, chatgptRealtimeVoiceBaseURL+"/", upstream.lastReq.Header.Get("Referer"))
+	require.Equal(t, chatgptRealtimeVoiceAdvancedPath, upstream.lastReq.Header.Get("X-OpenAI-Target-Path"))
+	require.Equal(t, chatgptRealtimeVoiceAdvancedPath, upstream.lastReq.Header.Get("X-OpenAI-Target-Route"))
+	require.Equal(t, "en-US", upstream.lastReq.Header.Get("OAI-Language"))
+	require.Equal(t, "device-realtime", upstream.lastReq.Header.Get("OAI-Device-Id"))
+	require.Equal(t, "session-realtime", upstream.lastReq.Header.Get("OAI-Session-Id"))
+	require.Equal(t, chatgptRealtimeWebClientVersion, upstream.lastReq.Header.Get("OAI-Client-Version"))
+	require.Equal(t, chatgptRealtimeWebClientBuildNumber, upstream.lastReq.Header.Get("OAI-Client-Build-Number"))
+	require.Equal(t, "Mozilla/5.0 RealtimeVoiceTest", upstream.lastReq.Header.Get("User-Agent"))
 	require.Contains(t, upstream.lastReq.Header.Get("Content-Type"), "multipart/form-data")
 
 	fields := readOpenAIRealtimeMultipartFields(t, upstream.lastReq.Header.Get("Content-Type"), upstream.lastBody)
 	require.Equal(t, offerSDP, fields["sdp"])
 	require.JSONEq(t, sessionJSON, fields["session"])
+}
+
+func TestSafeRealtimeWebHeaderValueRejectsControlCharactersAndOversizedValues(t *testing.T) {
+	require.Equal(t, "zh-CN", safeRealtimeWebHeaderValue("  zh-CN  ", 16))
+	require.Empty(t, safeRealtimeWebHeaderValue("bad\r\nheader", 64))
+	require.Empty(t, safeRealtimeWebHeaderValue(strings.Repeat("x", 17), 16))
 }
 
 func TestForwardOAuthRealtimeVoiceCallRejectsUnboundedResponse(t *testing.T) {

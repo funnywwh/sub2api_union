@@ -45,10 +45,16 @@ const (
 	chatgptRealtimeVoiceAdvancedPath = "/realtime/vp"
 	chatgptRealtimeVoiceStandardPath = "/realtime/vps"
 	chatgptRealtimeVoiceWingmanPath  = "/realtime/wm"
-	realtimeVoiceSDPMaxSize          = 256 << 10
-	realtimeVoiceSessionMaxSize      = 256 << 10
-	realtimeVoiceCallMaxRequestSize  = 1 << 20
-	realtimeVoiceCallMaxResponseSize = 1 << 20
+	// These values mirror the current ChatGPT web client. They are request
+	// context hints, not credentials; callers may send fresher values via the
+	// allowlisted OAI headers below without gaining access to another account.
+	chatgptRealtimeWebClientVersion     = "prod-2c08737cf6aa91754c5bf303734db2dba173c6ce"
+	chatgptRealtimeWebClientBuildNumber = "8578659"
+	chatgptRealtimeWebFallbackUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36"
+	realtimeVoiceSDPMaxSize             = 256 << 10
+	realtimeVoiceSessionMaxSize         = 256 << 10
+	realtimeVoiceCallMaxRequestSize     = 1 << 20
+	realtimeVoiceCallMaxResponseSize    = 1 << 20
 	// OpenAIRealtimeVoiceBillingModel is deliberately independent from
 	// ChatGPT's private upstream model names. Realtime voice is billed once per
 	// successfully created session through channel per-request pricing.
@@ -1108,23 +1114,7 @@ func buildChatGPTRealtimeVoiceTokenRequest(
 	if accountID := account.GetChatGPTAccountID(); accountID != "" {
 		req.Header.Set("chatgpt-account-id", accountID)
 	}
-	if c != nil {
-		if proofToken := strings.TrimSpace(c.GetHeader("OpenAI-Sentinel-Proof-Token")); proofToken != "" {
-			req.Header.Set("OpenAI-Sentinel-Proof-Token", proofToken)
-		}
-		if originator := strings.TrimSpace(c.GetHeader("Originator")); originator != "" {
-			req.Header.Set("Originator", originator)
-		}
-		if userAgent := strings.TrimSpace(c.GetHeader("User-Agent")); openai.IsCodexCLIRequest(userAgent) {
-			req.Header.Set("User-Agent", userAgent)
-		}
-	}
-	if req.Header.Get("Originator") == "" {
-		req.Header.Set("Originator", "Codex Desktop")
-	}
-	if !openai.IsCodexCLIRequest(req.Header.Get("User-Agent")) {
-		req.Header.Set("User-Agent", codexCLIUserAgent)
-	}
+	applyChatGPTRealtimeWebHeaders(req, c, account)
 	return req, nil
 }
 
@@ -1284,27 +1274,73 @@ func buildChatGPTRealtimeVoiceCallRequest(
 	if accountID := account.GetChatGPTAccountID(); accountID != "" {
 		req.Header.Set("chatgpt-account-id", accountID)
 	}
+	applyChatGPTRealtimeWebHeaders(req, c, account)
+	return req, nil
+}
+
+// applyChatGPTRealtimeWebHeaders keeps the private realtime handshake aligned
+// with ChatGPT Web. In particular, it must not identify the request as Codex:
+// the browser implementation uses its OAI web context headers and performs the
+// media connection from the same web session after receiving the SDP answer.
+func applyChatGPTRealtimeWebHeaders(req *http.Request, c *gin.Context, account *Account) {
+	if req == nil {
+		return
+	}
+
+	req.Header.Del("Originator")
+	req.Header.Set("Origin", chatgptRealtimeVoiceBaseURL)
+	req.Header.Set("Referer", chatgptRealtimeVoiceBaseURL+"/")
+	req.Header.Set("X-OpenAI-Target-Path", req.URL.Path)
+	req.Header.Set("X-OpenAI-Target-Route", req.URL.Path)
+	req.Header.Set("OAI-Client-Version", chatgptRealtimeWebClientVersion)
+	req.Header.Set("OAI-Client-Build-Number", chatgptRealtimeWebClientBuildNumber)
+
 	if c != nil {
-		if proofToken := strings.TrimSpace(c.GetHeader("OpenAI-Sentinel-Proof-Token")); proofToken != "" {
+		for _, name := range []string{
+			"OAI-Language",
+			"OAI-Device-Id",
+			"OAI-Session-Id",
+			"OAI-Client-Version",
+			"OAI-Client-Build-Number",
+			"OAI-Chat-Web-Route",
+			"OAI-Location",
+		} {
+			if value := safeRealtimeWebHeaderValue(c.GetHeader(name), 512); value != "" {
+				req.Header.Set(name, value)
+			}
+		}
+		if proofToken := safeRealtimeWebHeaderValue(c.GetHeader("OpenAI-Sentinel-Proof-Token"), 4096); proofToken != "" {
 			req.Header.Set("OpenAI-Sentinel-Proof-Token", proofToken)
 		}
-		if originator := strings.TrimSpace(c.GetHeader("Originator")); originator != "" {
-			req.Header.Set("Originator", originator)
+		if language := req.Header.Get("OAI-Language"); language != "" {
+			req.Header.Set("Accept-Language", language)
 		}
-		if userAgent := strings.TrimSpace(c.GetHeader("User-Agent")); openai.IsCodexCLIRequest(userAgent) {
+		if userAgent := safeRealtimeWebHeaderValue(c.GetHeader("User-Agent"), 1024); userAgent != "" {
 			req.Header.Set("User-Agent", userAgent)
 		}
 	}
-	if customUA := strings.TrimSpace(account.GetOpenAIUserAgent()); customUA != "" {
-		req.Header.Set("User-Agent", customUA)
-	}
-	if req.Header.Get("Originator") == "" {
-		req.Header.Set("Originator", "Codex Desktop")
+
+	if account != nil {
+		if customUA := safeRealtimeWebHeaderValue(account.GetOpenAIUserAgent(), 1024); customUA != "" {
+			req.Header.Set("User-Agent", customUA)
+		}
 	}
 	if strings.TrimSpace(req.Header.Get("User-Agent")) == "" {
-		req.Header.Set("User-Agent", codexCLIUserAgent)
+		req.Header.Set("User-Agent", chatgptRealtimeWebFallbackUserAgent)
 	}
-	return req, nil
+}
+
+func safeRealtimeWebHeaderValue(value string, maxLength int) string {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > maxLength {
+		return ""
+	}
+	for _, ch := range value {
+		if ch < 0x20 || ch == 0x7f {
+			return ""
+		}
+	}
+	return value
 }
 
 func (s *OpenAIGatewayService) ForwardAudioTranscription(
