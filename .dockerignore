@@ -29,6 +29,11 @@ build/
 # Node modules (will be installed in container)
 frontend/node_modules/
 node_modules/
+mobile/cordova/node_modules/
+mobile/cordova/platforms/
+mobile/cordova/plugins/
+mobile/cordova/www/
+mobile/cordova/artifacts/
 
 # Go build cache (will be built in container)
 backend/vendor/
@@ -75,3 +80,8 @@ deploy/redis_data/
 .claude/
 issues/
 CLAUDE.md
+
+# Local agent state and downloaded archive
+.agents/
+.codex/
+sub2api-*.tgz

@@ -1,4 +1,5 @@
 import { apiClient } from './client'
+import { serverUrl } from './baseUrl'
 
 export interface ChatModel {
   id: string
@@ -89,8 +90,8 @@ class UserChatRequestError extends Error {
 }
 
 const USER_CHAT_MODELS_URL = '/user/chat/models'
-const USER_CHAT_COMPLETIONS_URL = '/api/v1/user/chat/completions'
-const USER_CHAT_IMAGES_URL = '/api/v1/user/chat/images'
+const USER_CHAT_COMPLETIONS_URL = serverUrl('/api/v1/user/chat/completions')
+const USER_CHAT_IMAGES_URL = serverUrl('/api/v1/user/chat/images')
 
 function createAuthHeaders(accept = 'application/json'): HeadersInit {
   const token = localStorage.getItem('auth_token')
