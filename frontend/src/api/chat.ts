@@ -90,8 +90,14 @@ class UserChatRequestError extends Error {
 }
 
 const USER_CHAT_MODELS_URL = '/user/chat/models'
-const USER_CHAT_COMPLETIONS_URL = serverUrl('/api/v1/user/chat/completions')
-const USER_CHAT_IMAGES_URL = serverUrl('/api/v1/user/chat/images')
+
+function userChatCompletionsUrl(): string {
+  return serverUrl('/api/v1/user/chat/completions')
+}
+
+function userChatImagesUrl(): string {
+  return serverUrl('/api/v1/user/chat/images')
+}
 
 function createAuthHeaders(accept = 'application/json'): HeadersInit {
   const token = localStorage.getItem('auth_token')
@@ -503,7 +509,7 @@ export async function listUserChatModels(groupId: number, signal?: AbortSignal):
 }
 
 export async function streamUserChatCompletion(options: StreamUserChatOptions): Promise<string> {
-  const response = await fetch(USER_CHAT_COMPLETIONS_URL, {
+  const response = await fetch(userChatCompletionsUrl(), {
     method: 'POST',
     headers: createAuthHeaders('text/event-stream'),
     body: JSON.stringify({
@@ -598,7 +604,7 @@ export async function streamUserChatCompletion(options: StreamUserChatOptions): 
 export async function generateUserChatImages(
   options: GenerateUserChatImagesOptions
 ): Promise<GenerateUserChatImagesResult> {
-  const response = await fetch(USER_CHAT_IMAGES_URL, {
+  const response = await fetch(userChatImagesUrl(), {
     method: 'POST',
     headers: createAuthHeaders('application/json, text/event-stream'),
     body: JSON.stringify({

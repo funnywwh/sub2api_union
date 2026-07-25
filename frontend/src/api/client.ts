@@ -6,18 +6,29 @@
 import axios, { AxiosInstance, AxiosError, InternalAxiosRequestConfig, AxiosResponse } from 'axios'
 import type { ApiResponse } from '@/types'
 import { getLocale } from '@/i18n'
-import { API_BASE_URL } from './baseUrl'
+import { API_BASE_URL, API_BASE_URL_CHANGE_EVENT, isRemoteApiBaseUrl } from './baseUrl'
 
 // ==================== Axios Instance Configuration ====================
 
 export const apiClient: AxiosInstance = axios.create({
   baseURL: API_BASE_URL,
-  withCredentials: true,
+  // Browser deployments use same-origin cookies. Cordova uses a remote API
+  // origin (https://localhost -> API host), where credentials with a wildcard
+  // CORS origin are rejected by Chromium. Mobile authentication uses the
+  // bearer token stored below, so cookies are neither required nor desirable.
+  withCredentials: !isRemoteApiBaseUrl(),
   timeout: 30000,
   headers: {
     'Content-Type': 'application/json'
   }
 })
+
+if (typeof window !== 'undefined') {
+  window.addEventListener(API_BASE_URL_CHANGE_EVENT, () => {
+    apiClient.defaults.baseURL = API_BASE_URL
+    apiClient.defaults.withCredentials = !isRemoteApiBaseUrl()
+  })
+}
 
 // ==================== Token Refresh State ====================
 

@@ -36,6 +36,7 @@ frontend/node_modules/
 frontend/dist/
 frontend/src/generated/buildHash.ts
 mobile/cordova/*.apk
+mobile/cordova/*.idsig
 *.local
 *.tsbuildinfo
 vite.config.d.ts

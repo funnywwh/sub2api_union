@@ -12,6 +12,9 @@ describe('API Client', () => {
 
   beforeEach(async () => {
     localStorage.clear()
+    // Tests start from the browser deployment case; individual cases can
+    // override this with a Cordova remote API address.
+    vi.stubEnv('VITE_API_BASE_URL', '')
     // 每次测试重新导入以获取干净的模块状态
     vi.resetModules()
     const mod = await import('@/api/client')
@@ -19,7 +22,10 @@ describe('API Client', () => {
   })
 
   afterEach(() => {
+    localStorage.clear()
+    vi.unstubAllEnvs()
     vi.restoreAllMocks()
+    vi.resetModules()
   })
 
   // --- 请求拦截器 ---
@@ -106,6 +112,28 @@ describe('API Client', () => {
 
       const config = adapter.mock.calls[0][0]
       expect(config.withCredentials).toBe(true)
+    })
+
+    it('远程 API 构建不携带 cookie，避免 Cordova CORS 拦截', async () => {
+      vi.stubEnv('VITE_API_BASE_URL', 'https://api.example.com/api/v1')
+      vi.resetModules()
+
+      const remoteClient = (await import('@/api/client')).apiClient
+
+      expect(remoteClient.defaults.withCredentials).toBe(false)
+    })
+
+    it('切换移动端服务器地址后立即更新请求客户端', async () => {
+      vi.stubEnv('VITE_API_BASE_URL', 'https://api.example.com/api/v1')
+      vi.resetModules()
+
+      const { apiClient: remoteClient } = await import('@/api/client')
+      const { setRuntimeApiBaseUrl } = await import('@/api/baseUrl')
+
+      setRuntimeApiBaseUrl('https://another-api.example')
+
+      expect(remoteClient.defaults.baseURL).toBe('https://another-api.example/api/v1')
+      expect(remoteClient.defaults.withCredentials).toBe(false)
     })
   })
 

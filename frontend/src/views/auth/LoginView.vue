@@ -11,6 +11,29 @@
         </p>
       </div>
 
+      <!-- Mobile API URL -->
+      <div v-if="canConfigureApiUrl">
+        <label for="api-base-url" class="input-label">
+          {{ t('auth.apiServerUrl') }}
+        </label>
+        <input
+          id="api-base-url"
+          v-model="apiBaseUrl"
+          type="url"
+          inputmode="url"
+          autocomplete="url"
+          :disabled="isLoading"
+          class="input"
+          :class="{ 'input-error': apiUrlError }"
+          :placeholder="t('auth.apiServerUrlPlaceholder')"
+          @blur="saveApiUrl"
+          @keyup.enter.prevent="saveApiUrl"
+        />
+        <p class="mt-1 text-xs" :class="apiUrlError ? 'text-red-600 dark:text-red-400' : 'text-gray-500 dark:text-dark-400'">
+          {{ apiUrlError || t('auth.apiServerUrlHint') }}
+        </p>
+      </div>
+
   <div v-if="!backendModeEnabled && (linuxdoOAuthEnabled || wechatOAuthEnabled || oidcOAuthEnabled)" class="space-y-4">
         <LinuxDoOAuthSection
           v-if="linuxdoOAuthEnabled"
@@ -104,6 +127,20 @@
           </div>
         </div>
 
+        <!-- Remember Credentials -->
+        <div class="flex items-center">
+          <input
+            id="remember-credentials"
+            v-model="rememberCredentials"
+            type="checkbox"
+            :disabled="isLoading"
+            class="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500 dark:border-dark-600 dark:bg-dark-800"
+          />
+          <label for="remember-credentials" class="ml-2 text-sm text-gray-600 dark:text-dark-300">
+            {{ t('auth.rememberCredentials') }}
+          </label>
+        </div>
+
         <!-- Turnstile Widget -->
         <div v-if="turnstileEnabled && turnstileSiteKey">
           <TurnstileWidget
@@ -185,6 +222,7 @@ import Icon from '@/components/icons/Icon.vue'
 import TurnstileWidget from '@/components/TurnstileWidget.vue'
 import { useAuthStore, useAppStore } from '@/stores'
 import { getPublicSettings, isTotp2FARequired, isWeChatWebOAuthEnabled } from '@/api/auth'
+import { API_BASE_URL, isRemoteApiBaseUrl, setRuntimeApiBaseUrl } from '@/api/baseUrl'
 import type { TotpLoginResponse } from '@/types'
 import { clearAllAffiliateReferralCodes } from '@/utils/oauthAffiliate'
 
@@ -201,6 +239,12 @@ const appStore = useAppStore()
 const isLoading = ref<boolean>(false)
 const errorMessage = ref<string>('')
 const showPassword = ref<boolean>(false)
+const canConfigureApiUrl = isRemoteApiBaseUrl()
+const apiBaseUrl = ref<string>(API_BASE_URL)
+const apiUrlError = ref<string>('')
+const rememberCredentials = ref<boolean>(false)
+
+const SAVED_LOGIN_CREDENTIALS_KEY = 'sub2api.saved_login_credentials'
 
 // Public settings
 const turnstileEnabled = ref<boolean>(false)
@@ -243,17 +287,41 @@ watch(validationToastMessage, (value, previousValue) => {
   }
 })
 
-// ==================== Lifecycle ====================
+function loadSavedCredentials(): void {
+  try {
+    const stored = localStorage.getItem(SAVED_LOGIN_CREDENTIALS_KEY)
+    if (!stored) return
 
-onMounted(async () => {
-  const expiredFlag = sessionStorage.getItem('auth_expired')
-  if (expiredFlag) {
-    sessionStorage.removeItem('auth_expired')
-    const message = t('auth.reloginRequired')
-    errorMessage.value = message
-    appStore.showWarning(message)
+    const credentials = JSON.parse(stored) as { email?: unknown; password?: unknown }
+    if (typeof credentials.email === 'string' && typeof credentials.password === 'string') {
+      formData.email = credentials.email
+      formData.password = credentials.password
+      rememberCredentials.value = true
+    }
+  } catch {
+    // Ignore malformed or inaccessible local storage data.
   }
+}
 
+function persistSavedCredentials(): void {
+  try {
+    if (!rememberCredentials.value) {
+      localStorage.removeItem(SAVED_LOGIN_CREDENTIALS_KEY)
+      return
+    }
+
+    localStorage.setItem(
+      SAVED_LOGIN_CREDENTIALS_KEY,
+      JSON.stringify({ email: formData.email, password: formData.password })
+    )
+  } catch {
+    // Authentication remains available when local storage is unavailable.
+  }
+}
+
+watch([() => formData.email, () => formData.password, rememberCredentials], persistSavedCredentials)
+
+async function loadPublicSettings(): Promise<void> {
   try {
     const settings = await getPublicSettings()
     turnstileEnabled.value = settings.turnstile_enabled
@@ -263,11 +331,36 @@ onMounted(async () => {
     backendModeEnabled.value = settings.backend_mode_enabled
     oidcOAuthEnabled.value = settings.oidc_oauth_enabled
     oidcOAuthProviderName.value = settings.oidc_oauth_provider_name || 'OIDC'
-    backendModeEnabled.value = settings.backend_mode_enabled
     passwordResetEnabled.value = settings.password_reset_enabled
   } catch (error) {
     console.error('Failed to load public settings:', error)
   }
+}
+
+async function saveApiUrl(): Promise<void> {
+  try {
+    apiBaseUrl.value = setRuntimeApiBaseUrl(apiBaseUrl.value)
+    apiUrlError.value = ''
+    await loadPublicSettings()
+  } catch {
+    apiUrlError.value = t('auth.invalidApiServerUrl')
+  }
+}
+
+// ==================== Lifecycle ====================
+
+onMounted(async () => {
+  loadSavedCredentials()
+
+  const expiredFlag = sessionStorage.getItem('auth_expired')
+  if (expiredFlag) {
+    sessionStorage.removeItem('auth_expired')
+    const message = t('auth.reloginRequired')
+    errorMessage.value = message
+    appStore.showWarning(message)
+  }
+
+  await loadPublicSettings()
 })
 
 // ==================== Turnstile Handlers ====================

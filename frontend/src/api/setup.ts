@@ -2,7 +2,7 @@
  * Setup API endpoints
  */
 import axios from 'axios'
-import { serverUrl } from './baseUrl'
+import { API_BASE_URL_CHANGE_EVENT, serverUrl } from './baseUrl'
 
 // Create a separate client for setup endpoints (not under /api/v1)
 const setupClient = axios.create({
@@ -12,6 +12,12 @@ const setupClient = axios.create({
     'Content-Type': 'application/json'
   }
 })
+
+if (typeof window !== 'undefined') {
+  window.addEventListener(API_BASE_URL_CHANGE_EVENT, () => {
+    setupClient.defaults.baseURL = serverUrl('/')
+  })
+}
 
 export interface SetupStatus {
   needs_setup: boolean
