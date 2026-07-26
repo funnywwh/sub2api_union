@@ -205,3 +205,24 @@ func TestRealtimeVoiceTokenLeaseIDMatchesClientIdempotency(t *testing.T) {
 	c.Request.Header.Set("Idempotency-Key", "new-voice-token-session")
 	require.NotEqual(t, leaseID, realtimeVoiceTokenLeaseID(c, 77))
 }
+
+func TestRealtimeVoiceSessionIdempotencyUnifiesTokenAndCallBilling(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/realtime/vp", nil)
+	c.Request.Header.Set("Idempotency-Key", "voice-session-1")
+
+	sessionID := realtimeVoiceSessionRequestID(c, 77)
+	fingerprint := realtimeVoiceSessionBillingFingerprint(c, 77)
+	require.NotEmpty(t, sessionID)
+	require.Equal(t, sessionID, realtimeVoiceTokenUsageRequestID(c, 77, nil))
+	require.Equal(t, sessionID, realtimeVoiceTokenLeaseID(c, 77))
+	require.NotEmpty(t, fingerprint)
+	require.Equal(t, fingerprint, realtimeVoiceSessionBillingFingerprint(c, 77))
+
+	c.Request.Header.Set("Idempotency-Key", "voice-session-2")
+	require.NotEqual(t, sessionID, realtimeVoiceSessionRequestID(c, 77))
+	require.NotEqual(t, sessionID, realtimeVoiceTokenUsageRequestID(c, 77, nil))
+	require.NotEqual(t, fingerprint, realtimeVoiceSessionBillingFingerprint(c, 77))
+}

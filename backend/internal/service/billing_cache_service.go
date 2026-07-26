@@ -42,6 +42,7 @@ const (
 	cacheWriteSetBalance cacheWriteKind = iota
 	cacheWriteSetSubscription
 	cacheWriteUpdateSubscriptionUsage
+	cacheWriteInvalidateSubscription
 	cacheWriteDeductBalance
 	cacheWriteUpdateRateLimitUsage
 )
@@ -206,6 +207,12 @@ func (s *BillingCacheService) cacheWriteWorker(ch <-chan cacheWriteTask) {
 					logger.LegacyPrintf("service.billing_cache", "Warning: update subscription cache failed for user %d group %d: %v", task.userID, task.groupID, err)
 				}
 			}
+		case cacheWriteInvalidateSubscription:
+			if s.cache != nil {
+				if err := s.cache.InvalidateSubscriptionCache(ctx, task.userID, task.groupID); err != nil {
+					logger.LegacyPrintf("service.billing_cache", "Warning: invalidate subscription cache failed for user %d group %d: %v", task.userID, task.groupID, err)
+				}
+			}
 		case cacheWriteDeductBalance:
 			if s.cache != nil {
 				if err := s.cache.DeductUserBalance(ctx, task.userID, task.amount); err != nil {
@@ -232,6 +239,8 @@ func cacheWriteKindName(kind cacheWriteKind) string {
 		return "set_subscription"
 	case cacheWriteUpdateSubscriptionUsage:
 		return "update_subscription_usage"
+	case cacheWriteInvalidateSubscription:
+		return "invalidate_subscription"
 	case cacheWriteDeductBalance:
 		return "deduct_balance"
 	case cacheWriteUpdateRateLimitUsage:
@@ -493,6 +502,28 @@ func (s *BillingCacheService) QueueUpdateSubscriptionUsage(userID, groupID int64
 	defer cancel()
 	if err := s.UpdateSubscriptionUsage(ctx, userID, groupID, costUSD); err != nil {
 		logger.LegacyPrintf("service.billing_cache", "Warning: update subscription cache fallback failed for user %d group %d: %v", userID, groupID, err)
+	}
+}
+
+// QueueInvalidateSubscription invalidates the cached usage after an atomic DB
+// billing update. This is required when a billing transaction resets an
+// expired window; adding the new cost to stale cached usage would otherwise
+// resurrect the old window and reject valid requests.
+func (s *BillingCacheService) QueueInvalidateSubscription(userID, groupID int64) {
+	if s.cache == nil {
+		return
+	}
+	if s.enqueueCacheWrite(cacheWriteTask{
+		kind:    cacheWriteInvalidateSubscription,
+		userID:  userID,
+		groupID: groupID,
+	}) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), cacheWriteTimeout)
+	defer cancel()
+	if err := s.InvalidateSubscription(ctx, userID, groupID); err != nil {
+		logger.LegacyPrintf("service.billing_cache", "Warning: invalidate subscription cache fallback failed for user %d group %d: %v", userID, groupID, err)
 	}
 }
 

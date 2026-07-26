@@ -1073,8 +1073,12 @@ func (s *OpenAIGatewayService) ForwardOAuthRealtimeVoiceToken(
 			})
 		}
 		if s.shouldFailoverOpenAIUpstreamResponse(resp.StatusCode, upstreamMsg, body) {
-			resp.Body = io.NopCloser(bytes.NewReader(body))
-			s.handleFailoverSideEffects(ctx, resp, account)
+			// Realtime voice bootstrap is a private ChatGPT control-plane
+			// handshake. A 401/403 here can be caused by an expired web proof,
+			// stale private-client headers, or a session/protocol mismatch; it is
+			// not sufficient evidence that the OAuth account itself is unhealthy.
+			// Keep failover and observability, but do not apply the generic account
+			// health side effects (temporary unscheduling/error state).
 			return nil, &UpstreamFailoverError{
 				StatusCode:             resp.StatusCode,
 				ResponseBody:           body,
@@ -1186,6 +1190,15 @@ func (s *OpenAIGatewayService) ForwardOAuthRealtimeVoiceCall(
 	if len(body) > realtimeVoiceCallMaxResponseSize {
 		return nil, fmt.Errorf("realtime voice signaling response exceeds %d bytes", realtimeVoiceCallMaxResponseSize)
 	}
+	if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("realtime voice signaling response returned unexpected success status %d", resp.StatusCode)
+		}
+		answerSDP := strings.TrimSpace(string(body))
+		if answerSDP == "" || !strings.HasPrefix(answerSDP, "v=0") {
+			return nil, fmt.Errorf("realtime voice signaling response is not a valid SDP answer")
+		}
+	}
 
 	if resp.StatusCode >= http.StatusBadRequest {
 		upstreamMsg := sanitizeUpstreamErrorMessage(strings.TrimSpace(extractUpstreamErrorMessage(body)))
@@ -1203,8 +1216,10 @@ func (s *OpenAIGatewayService) ForwardOAuthRealtimeVoiceCall(
 			})
 		}
 		if s.shouldFailoverOpenAIUpstreamResponse(resp.StatusCode, upstreamMsg, body) {
-			resp.Body = io.NopCloser(bytes.NewReader(body))
-			s.handleFailoverSideEffects(ctx, resp, account)
+			// The signaling response only validates the private realtime
+			// handshake. Do not turn a handshake/risk-control rejection into a
+			// persistent account scheduling penalty; the handler still receives a
+			// failover error and can try another account.
 			return nil, &UpstreamFailoverError{
 				StatusCode:             resp.StatusCode,
 				ResponseBody:           body,

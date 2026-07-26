@@ -1161,15 +1161,17 @@ func TestOpenAIGatewayServiceRecordUsage_RealtimeVoiceBillsOncePerSession(t *tes
 			GroupID: &groupID,
 			Group:   &Group{ID: groupID, RateMultiplier: 1},
 		},
-		User:               &User{ID: 2000},
-		Account:            &Account{ID: 3000, Platform: PlatformOpenAI, Type: AccountTypeOAuth},
-		RequestPayloadHash: "semantic-offer-hash",
+		User:                      &User{ID: 2000},
+		Account:                   &Account{ID: 3000, Platform: PlatformOpenAI, Type: AccountTypeOAuth},
+		RequestPayloadHash:        "semantic-offer-hash",
+		BillingRequestFingerprint: "realtime-session-fingerprint",
 	})
 
 	require.NoError(t, err)
 	require.Equal(t, 1, billingRepo.calls)
 	require.NotNil(t, billingRepo.lastCmd)
 	require.Equal(t, "realtime-call:1000:semantic-offer-hash", billingRepo.lastCmd.RequestID)
+	require.Equal(t, "realtime-session-fingerprint", billingRepo.lastCmd.RequestFingerprint)
 	require.InDelta(t, price, billingRepo.lastCmd.BalanceCost, 1e-12)
 	require.NotNil(t, usageRepo.lastLog)
 	require.Equal(t, "gpt-4o-realtime", usageRepo.lastLog.Model)

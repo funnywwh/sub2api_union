@@ -1403,6 +1403,7 @@ export default {
       apiKey: '网关 API Key',
       apiKeyPlaceholder: 'sk-...',
       apiKeyHint: '仅用于本次请求，本页面不会保存密钥。',
+      billingNotice: '每次成功返回实时语音 Token 或 SDP 信令都会按渠道按次计费，请使用测试专用 API Key。',
       proofToken: 'Sentinel Proof Token（可选）',
       proofTokenPlaceholder: 'OpenAI-Sentinel-Proof-Token',
       proofTokenHint: '如上游风控要求，请填写 Proof Token；仅随本次信令请求转发，不会保存。',

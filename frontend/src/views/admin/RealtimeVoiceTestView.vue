@@ -34,6 +34,9 @@
               <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
                 {{ t('admin.realtimeVoiceTest.apiKeyHint') }}
               </p>
+              <p class="mt-1.5 text-xs text-amber-600 dark:text-amber-400">
+                {{ t('admin.realtimeVoiceTest.billingNotice') }}
+              </p>
             </div>
 
             <div>

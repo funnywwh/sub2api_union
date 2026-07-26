@@ -75,11 +75,11 @@ func (h *OpenAIGatewayHandler) RealtimeVoiceToken(c *gin.Context) {
 	setOpsEndpointContext(c, "", int16(service.RequestTypeSync))
 	service.SetOpsLatencyMs(c, service.OpsAuthLatencyMsKey, time.Since(requestStart).Milliseconds())
 	routingStart := time.Now()
-	sessionSeed := strings.Join([]string{
+	sessionSeed := realtimeVoiceSessionSeed(c, subject.UserID, apiKey.ID, strings.Join([]string{
 		"openai-realtime-voice-token",
 		strconv.FormatInt(subject.UserID, 10),
 		strconv.FormatInt(apiKey.ID, 10),
-	}, "|")
+	}, "|"))
 	sessionHash := h.gatewayService.GenerateSessionHashWithFallback(c, nil, sessionSeed)
 	leaseID := realtimeVoiceTokenLeaseID(c, apiKey.ID)
 
@@ -162,6 +162,7 @@ func (h *OpenAIGatewayHandler) RealtimeVoiceToken(c *gin.Context) {
 			model,
 		}, "|")))
 		usageRequestID := realtimeVoiceTokenUsageRequestID(c, apiKey.ID, result)
+		billingFingerprint := realtimeVoiceSessionBillingFingerprint(c, apiKey.ID)
 		if err := h.recordRealtimeVoiceUsage(
 			c,
 			apiKey,
@@ -170,11 +171,16 @@ func (h *OpenAIGatewayHandler) RealtimeVoiceToken(c *gin.Context) {
 			model,
 			usageRequestID,
 			usagePayloadHash,
+			billingFingerprint,
 			"/backend-api/voice_token",
 			time.Since(requestStart),
 		); err != nil {
 			reqLog.Error("openai.realtime_voice_token.record_usage_failed", zap.Error(err))
-			h.errorResponse(c, http.StatusServiceUnavailable, "billing_service_error", "Failed to record realtime voice session usage")
+			status, code, message, retryAfter := realtimeVoiceBillingErrorDetails(err)
+			if retryAfter > 0 {
+				c.Header("Retry-After", strconv.Itoa(retryAfter))
+			}
+			h.errorResponse(c, status, code, message)
 			return
 		}
 		// The raw account slot is intentionally retained. Redis removes it after
@@ -273,8 +279,16 @@ func (h *OpenAIGatewayHandler) RealtimeVoiceCall(c *gin.Context, explicitMode st
 	setOpsEndpointContext(c, "", int16(service.RequestTypeSync))
 	service.SetOpsLatencyMs(c, service.OpsAuthLatencyMsKey, time.Since(requestStart).Milliseconds())
 	routingStart := time.Now()
-	sessionHash := h.gatewayService.GenerateSessionHashWithFallback(c, nil, parsed.StickySessionSeed())
+	sessionHash := h.gatewayService.GenerateSessionHashWithFallback(
+		c,
+		nil,
+		realtimeVoiceSessionSeed(c, subject.UserID, apiKey.ID, parsed.StickySessionSeed()),
+	)
 	usageRequestID := parsed.UsageRequestID(apiKey.ID)
+	if sessionRequestID := realtimeVoiceSessionRequestID(c, apiKey.ID); sessionRequestID != "" {
+		usageRequestID = sessionRequestID
+	}
+	billingFingerprint := realtimeVoiceSessionBillingFingerprint(c, apiKey.ID)
 
 	failedAccountIDs := make(map[int64]struct{})
 	switchCount := 0
@@ -350,7 +364,7 @@ func (h *OpenAIGatewayHandler) RealtimeVoiceCall(c *gin.Context, explicitMode st
 		accountReachable := result.StatusCode < http.StatusInternalServerError
 		h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, accountReachable, nil)
 		h.gatewayService.UpdateCodexUsageSnapshotFromHeaders(c.Request.Context(), account.ID, result.ResponseHeaders)
-		if result.StatusCode < http.StatusOK || result.StatusCode >= http.StatusMultipleChoices {
+		if result.StatusCode != http.StatusOK {
 			if pendingAccountRelease != nil {
 				pendingAccountRelease()
 				pendingAccountRelease = nil
@@ -364,11 +378,16 @@ func (h *OpenAIGatewayHandler) RealtimeVoiceCall(c *gin.Context, explicitMode st
 				parsed.Model,
 				usageRequestID,
 				parsed.UsagePayloadHash(),
+				billingFingerprint,
 				parsed.UpstreamPath,
 				time.Since(requestStart),
 			); err != nil {
 				reqLog.Error("openai.realtime_voice_call.record_usage_failed", zap.Error(err))
-				h.errorResponse(c, http.StatusServiceUnavailable, "billing_service_error", "Failed to record realtime voice session usage")
+				status, code, message, retryAfter := realtimeVoiceBillingErrorDetails(err)
+				if retryAfter > 0 {
+					c.Header("Retry-After", strconv.Itoa(retryAfter))
+				}
+				h.errorResponse(c, status, code, message)
 				return
 			}
 			pendingAccountRelease = nil
@@ -398,13 +417,8 @@ func realtimeVoiceTokenUsageRequestID(
 	apiKeyID int64,
 	result *service.OpenAIRealtimeVoiceTokenResult,
 ) string {
-	if value := realtimeVoiceClientIdempotencyValue(c); value != "" {
-		return strings.Join([]string{
-			"realtime-token",
-			strconv.FormatInt(apiKeyID, 10),
-			"idempotency",
-			service.HashUsageRequestPayload([]byte(value)),
-		}, ":")
+	if requestID := realtimeVoiceSessionRequestID(c, apiKeyID); requestID != "" {
+		return requestID
 	}
 	if result != nil {
 		for _, name := range []string{"x-request-id", "openai-request-id"} {
@@ -435,13 +449,8 @@ func realtimeVoiceTokenUsageRequestID(
 }
 
 func realtimeVoiceTokenLeaseID(c *gin.Context, apiKeyID int64) string {
-	if value := realtimeVoiceClientIdempotencyValue(c); value != "" {
-		return strings.Join([]string{
-			"realtime-token",
-			strconv.FormatInt(apiKeyID, 10),
-			"idempotency",
-			service.HashUsageRequestPayload([]byte(value)),
-		}, ":")
+	if requestID := realtimeVoiceSessionRequestID(c, apiKeyID); requestID != "" {
+		return requestID
 	}
 	return strings.Join([]string{
 		"realtime-token",
@@ -449,6 +458,39 @@ func realtimeVoiceTokenLeaseID(c *gin.Context, apiKeyID int64) string {
 		"lease",
 		strconv.FormatInt(time.Now().UnixNano(), 10),
 	}, ":")
+}
+
+func realtimeVoiceSessionRequestID(c *gin.Context, apiKeyID int64) string {
+	value := realtimeVoiceClientIdempotencyValue(c)
+	if value == "" {
+		return ""
+	}
+	return strings.Join([]string{
+		"realtime-session",
+		strconv.FormatInt(apiKeyID, 10),
+		"idempotency",
+		service.HashUsageRequestPayload([]byte(value)),
+	}, ":")
+}
+
+func realtimeVoiceSessionBillingFingerprint(c *gin.Context, apiKeyID int64) string {
+	requestID := realtimeVoiceSessionRequestID(c, apiKeyID)
+	if requestID == "" {
+		return ""
+	}
+	return service.HashUsageRequestPayload([]byte("realtime-voice-billing|" + requestID))
+}
+
+func realtimeVoiceSessionSeed(c *gin.Context, userID, apiKeyID int64, fallback string) string {
+	requestID := realtimeVoiceSessionRequestID(c, apiKeyID)
+	if requestID == "" {
+		return fallback
+	}
+	return strings.Join([]string{
+		"openai-realtime-voice-session",
+		strconv.FormatInt(userID, 10),
+		requestID,
+	}, "|")
 }
 
 func realtimeVoiceClientIdempotencyValue(c *gin.Context) string {
@@ -466,6 +508,16 @@ func realtimeVoiceClientIdempotencyValue(c *gin.Context) string {
 	return ""
 }
 
+func realtimeVoiceBillingErrorDetails(err error) (status int, code, message string, retryAfter int) {
+	if errors.Is(err, service.ErrInsufficientBalance) ||
+		errors.Is(err, service.ErrDailyLimitExceeded) ||
+		errors.Is(err, service.ErrWeeklyLimitExceeded) ||
+		errors.Is(err, service.ErrMonthlyLimitExceeded) {
+		return billingErrorDetails(err)
+	}
+	return http.StatusServiceUnavailable, "billing_service_error", "Failed to record realtime voice session usage", 0
+}
+
 func (h *OpenAIGatewayHandler) recordRealtimeVoiceUsage(
 	c *gin.Context,
 	apiKey *service.APIKey,
@@ -474,6 +526,7 @@ func (h *OpenAIGatewayHandler) recordRealtimeVoiceUsage(
 	requestedModel string,
 	requestID string,
 	requestPayloadHash string,
+	billingFingerprint string,
 	upstreamEndpoint string,
 	duration time.Duration,
 ) error {
@@ -505,17 +558,18 @@ func (h *OpenAIGatewayHandler) recordRealtimeVoiceUsage(
 			ForceUsageRecord:       true,
 			ForcePerRequestBilling: true,
 		},
-		APIKey:             apiKey,
-		User:               apiKey.User,
-		Account:            account,
-		Subscription:       subscription,
-		ConversationID:     conversationID,
-		InboundEndpoint:    inboundEndpoint,
-		UpstreamEndpoint:   upstreamEndpoint,
-		UserAgent:          userAgent,
-		IPAddress:          clientIP,
-		RequestPayloadHash: requestPayloadHash,
-		APIKeyService:      h.apiKeyService,
+		APIKey:                    apiKey,
+		User:                      apiKey.User,
+		Account:                   account,
+		Subscription:              subscription,
+		ConversationID:            conversationID,
+		InboundEndpoint:           inboundEndpoint,
+		UpstreamEndpoint:          upstreamEndpoint,
+		UserAgent:                 userAgent,
+		IPAddress:                 clientIP,
+		RequestPayloadHash:        requestPayloadHash,
+		BillingRequestFingerprint: billingFingerprint,
+		APIKeyService:             h.apiKeyService,
 	})
 }
 

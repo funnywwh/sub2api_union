@@ -453,6 +453,62 @@ func TestForwardOAuthRealtimeVoiceCallUsesBoundedUnifiedWebRTCHandshake(t *testi
 	require.JSONEq(t, sessionJSON, fields["session"])
 }
 
+func TestForwardOAuthRealtimeVoiceCallRejectsNonSDPSuccess(t *testing.T) {
+	tests := []struct {
+		name       string
+		statusCode int
+		body       string
+		wantError  string
+	}{
+		{
+			name:       "unexpected 204",
+			statusCode: http.StatusNoContent,
+			wantError:  "unexpected success status",
+		},
+		{
+			name:       "empty 200",
+			statusCode: http.StatusOK,
+			body:       " \r\n",
+			wantError:  "not a valid SDP answer",
+		},
+		{
+			name:       "non SDP 200",
+			statusCode: http.StatusOK,
+			body:       `{"ok":true}`,
+			wantError:  "not a valid SDP answer",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			requestBody, contentType := buildOpenAIRealtimeVoiceCallTestBody(t,
+				"v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\n",
+				`{"voice_mode":"advanced"}`,
+			)
+			c, _ := newOpenAIRealtimeVoiceCallTestContext("/v1/realtime/calls", requestBody, contentType)
+			parsed, err := (&OpenAIGatewayService{}).ParseOpenAIRealtimeVoiceCallRequest(c, "")
+			require.NoError(t, err)
+
+			upstream := &httpUpstreamRecorder{resp: &http.Response{
+				StatusCode: tt.statusCode,
+				Header:     http.Header{"Content-Type": []string{"application/sdp"}},
+				Body:       io.NopCloser(strings.NewReader(tt.body)),
+			}}
+			svc := &OpenAIGatewayService{httpUpstream: upstream}
+			account := &Account{
+				ID:          17,
+				Platform:    PlatformOpenAI,
+				Type:        AccountTypeOAuth,
+				Credentials: map[string]any{"access_token": "oauth-token"},
+			}
+
+			result, err := svc.ForwardOAuthRealtimeVoiceCall(context.Background(), c, account, parsed)
+			require.Nil(t, result)
+			require.ErrorContains(t, err, tt.wantError)
+		})
+	}
+}
+
 func TestSafeRealtimeWebHeaderValueRejectsControlCharactersAndOversizedValues(t *testing.T) {
 	require.Equal(t, "zh-CN", safeRealtimeWebHeaderValue("  zh-CN  ", 16))
 	require.Empty(t, safeRealtimeWebHeaderValue("bad\r\nheader", 64))

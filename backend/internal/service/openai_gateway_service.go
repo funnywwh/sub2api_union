@@ -5185,7 +5185,11 @@ type OpenAIRecordUsageInput struct {
 	UserAgent          string // 请求的 User-Agent
 	IPAddress          string // 请求的客户端 IP 地址
 	RequestPayloadHash string
-	APIKeyService      APIKeyQuotaUpdater
+	// BillingRequestFingerprint is an optional trusted fingerprint override for
+	// protocol-level idempotency. Normal callers should leave it empty so the
+	// billing command fingerprint is derived from the full request details.
+	BillingRequestFingerprint string
+	APIKeyService             APIKeyQuotaUpdater
 	ChannelUsageFields
 }
 
@@ -5377,15 +5381,16 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 
 	billingErr := func() error {
 		_, err := applyUsageBilling(ctx, requestID, usageLog, &postUsageBillingParams{
-			Cost:                  cost,
-			User:                  user,
-			APIKey:                apiKey,
-			Account:               account,
-			Subscription:          subscription,
-			RequestPayloadHash:    resolveUsageBillingPayloadFingerprint(ctx, input.RequestPayloadHash),
-			IsSubscriptionBill:    isSubscriptionBilling,
-			AccountRateMultiplier: accountRateMultiplier,
-			APIKeyService:         input.APIKeyService,
+			Cost:                      cost,
+			User:                      user,
+			APIKey:                    apiKey,
+			Account:                   account,
+			Subscription:              subscription,
+			RequestPayloadHash:        resolveUsageBillingPayloadFingerprint(ctx, input.RequestPayloadHash),
+			BillingRequestFingerprint: strings.TrimSpace(input.BillingRequestFingerprint),
+			IsSubscriptionBill:        isSubscriptionBilling,
+			AccountRateMultiplier:     accountRateMultiplier,
+			APIKeyService:             input.APIKeyService,
 		}, s.billingDeps(), s.usageBillingRepo)
 		return err
 	}()

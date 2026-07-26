@@ -1399,6 +1399,7 @@ export default {
       apiKey: 'Gateway API key',
       apiKeyPlaceholder: 'sk-...',
       apiKeyHint: 'Used only for this request and never stored by this page.',
+      billingNotice: 'Each successful realtime voice token or SDP signaling response is billed per request. Use a dedicated test API key.',
       proofToken: 'Sentinel proof token (optional)',
       proofTokenPlaceholder: 'OpenAI-Sentinel-Proof-Token',
       proofTokenHint: 'Provide this only when upstream risk controls require it. It is forwarded with this signaling request and is not stored.',
