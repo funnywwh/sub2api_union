@@ -94,6 +94,8 @@ func provideCleanup(
 	geminiOAuth *service.GeminiOAuthService,
 	antigravityOAuth *service.AntigravityOAuthService,
 	openAIGateway *service.OpenAIGatewayService,
+	openAIGatewayHandler *handler.OpenAIGatewayHandler,
+	timingWheel *service.TimingWheelService,
 	scheduledTestRunner *service.ScheduledTestRunnerService,
 	backupSvc *service.BackupService,
 	paymentOrderExpiry *service.PaymentOrderExpiryService,
@@ -110,6 +112,12 @@ func provideCleanup(
 
 		// 应用层清理步骤可并行执行，基础设施资源（Redis/Ent）最后按顺序关闭。
 		parallelSteps := []cleanupStep{
+			{"OpenAIGatewayHandler", func() error {
+				if openAIGatewayHandler != nil {
+					openAIGatewayHandler.Stop()
+				}
+				return nil
+			}},
 			{"OpsScheduledReportService", func() error {
 				if opsScheduledReport != nil {
 					opsScheduledReport.Stop()
@@ -292,6 +300,12 @@ func provideCleanup(
 		}
 
 		runParallel(parallelSteps)
+		runSequential([]cleanupStep{{"TimingWheelService", func() error {
+			if timingWheel != nil {
+				timingWheel.Stop()
+			}
+			return nil
+		}}})
 		runSequential(infraSteps)
 
 		// Check if context timed out

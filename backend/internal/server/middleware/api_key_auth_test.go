@@ -177,6 +177,98 @@ func TestSimpleModeBypassesQuotaCheck(t *testing.T) {
 	})
 }
 
+func TestAPIKeyAuthTotalQuotaEnforcement(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	user := &service.User{
+		ID:          71,
+		Role:        service.RoleUser,
+		Status:      service.StatusActive,
+		Balance:     10,
+		Concurrency: 3,
+	}
+
+	tests := []struct {
+		name       string
+		runMode    string
+		keyStatus  string
+		quota      float64
+		quotaUsed  float64
+		wantStatus int
+	}{
+		{
+			name:       "standard_rejects_quota_exhausted_status",
+			runMode:    config.RunModeStandard,
+			keyStatus:  service.StatusAPIKeyQuotaExhausted,
+			quota:      10,
+			quotaUsed:  10,
+			wantStatus: http.StatusTooManyRequests,
+		},
+		{
+			name:       "standard_rejects_computed_total_quota_exhaustion",
+			runMode:    config.RunModeStandard,
+			keyStatus:  service.StatusActive,
+			quota:      10,
+			quotaUsed:  10,
+			wantStatus: http.StatusTooManyRequests,
+		},
+		{
+			name:       "simple_allows_same_quota_exhausted_key",
+			runMode:    config.RunModeSimple,
+			keyStatus:  service.StatusAPIKeyQuotaExhausted,
+			quota:      10,
+			quotaUsed:  10,
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "simple_allows_computed_total_quota_exhaustion",
+			runMode:    config.RunModeSimple,
+			keyStatus:  service.StatusActive,
+			quota:      10,
+			quotaUsed:  10,
+			wantStatus: http.StatusOK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			apiKey := &service.APIKey{
+				ID:        701,
+				UserID:    user.ID,
+				Key:       "total-quota-key",
+				Status:    tt.keyStatus,
+				Quota:     tt.quota,
+				QuotaUsed: tt.quotaUsed,
+				User:      user,
+			}
+			apiKeyRepo := &stubApiKeyRepo{
+				getByKey: func(ctx context.Context, key string) (*service.APIKey, error) {
+					if key != apiKey.Key {
+						return nil, service.ErrAPIKeyNotFound
+					}
+					clone := *apiKey
+					return &clone, nil
+				},
+			}
+			cfg := &config.Config{RunMode: tt.runMode}
+			apiKeyService := service.NewAPIKeyService(apiKeyRepo, nil, nil, nil, nil, nil, cfg)
+			router := newAuthTestRouter(apiKeyService, nil, cfg)
+
+			w := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, "/t", nil)
+			req.Header.Set("x-api-key", apiKey.Key)
+			router.ServeHTTP(w, req)
+
+			require.Equal(t, tt.wantStatus, w.Code)
+			if tt.wantStatus == http.StatusTooManyRequests {
+				require.Contains(t, w.Body.String(), "API_KEY_QUOTA_EXHAUSTED")
+			} else {
+				require.Contains(t, w.Body.String(), `"ok":true`)
+			}
+		})
+	}
+}
+
 func TestAPIKeyAuthSetsGroupContext(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

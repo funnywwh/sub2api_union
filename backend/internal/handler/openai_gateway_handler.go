@@ -30,12 +30,18 @@ type OpenAIGatewayHandler struct {
 	gatewayService          *service.OpenAIGatewayService
 	billingCacheService     *service.BillingCacheService
 	apiKeyService           *service.APIKeyService
+	responsesWSQuotaMonitor *openAIResponsesWSQuotaMonitor
 	usageRecordWorkerPool   *service.UsageRecordWorkerPool
 	errorPassthroughService *service.ErrorPassthroughService
 	concurrencyHelper       *ConcurrencyHelper
 	maxAccountSwitches      int
 	cfg                     *config.Config
 }
+
+const (
+	openAIResponsesWSQuotaMonitorTaskName = "openai:responses_ws_quota_monitor"
+	openAIResponsesWSQuotaMonitorInterval = 30 * time.Second
+)
 
 func resolveOpenAIForwardDefaultMappedModel(apiKey *service.APIKey, fallbackModel string) string {
 	if fallbackModel = strings.TrimSpace(fallbackModel); fallbackModel != "" {
@@ -85,27 +91,55 @@ func NewOpenAIGatewayHandler(
 	concurrencyService *service.ConcurrencyService,
 	billingCacheService *service.BillingCacheService,
 	apiKeyService *service.APIKeyService,
+	timingWheelService *service.TimingWheelService,
 	usageRecordWorkerPool *service.UsageRecordWorkerPool,
 	errorPassthroughService *service.ErrorPassthroughService,
 	cfg *config.Config,
 ) *OpenAIGatewayHandler {
 	pingInterval := time.Duration(0)
 	maxAccountSwitches := 3
+	var responsesWSQuotaMonitor *openAIResponsesWSQuotaMonitor
 	if cfg != nil {
 		pingInterval = time.Duration(cfg.Concurrency.PingInterval) * time.Second
 		if cfg.Gateway.MaxAccountSwitches > 0 {
 			maxAccountSwitches = cfg.Gateway.MaxAccountSwitches
+		}
+		if cfg.RunMode == config.RunModeStandard && apiKeyService != nil && timingWheelService != nil {
+			responsesWSQuotaMonitor = newOpenAIResponsesWSQuotaMonitor(
+				apiKeyService.GetByKey,
+				func(apiKeyID int64, err error) {
+					logger.L().Warn(
+						"openai.responses_ws_quota_check_failed",
+						zap.Int64("api_key_id", apiKeyID),
+						zap.Error(err),
+					)
+				},
+			)
+			timingWheelService.ScheduleRecurring(
+				openAIResponsesWSQuotaMonitorTaskName,
+				openAIResponsesWSQuotaMonitorInterval,
+				responsesWSQuotaMonitor.triggerScan,
+			)
 		}
 	}
 	return &OpenAIGatewayHandler{
 		gatewayService:          gatewayService,
 		billingCacheService:     billingCacheService,
 		apiKeyService:           apiKeyService,
+		responsesWSQuotaMonitor: responsesWSQuotaMonitor,
 		usageRecordWorkerPool:   usageRecordWorkerPool,
 		errorPassthroughService: errorPassthroughService,
 		concurrencyHelper:       NewConcurrencyHelper(concurrencyService, SSEPingFormatComment, pingInterval),
 		maxAccountSwitches:      maxAccountSwitches,
 		cfg:                     cfg,
+	}
+}
+
+// Stop releases the handler-owned background monitor before shared
+// infrastructure (Redis/Ent) is closed during application shutdown.
+func (h *OpenAIGatewayHandler) Stop() {
+	if h != nil && h.responsesWSQuotaMonitor != nil {
+		h.responsesWSQuotaMonitor.Stop()
 	}
 }
 
@@ -1274,6 +1308,20 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		return
 	}
 
+	proxyCtx, cancelProxy := context.WithCancelCause(ctx)
+	defer cancelProxy(nil)
+
+	var quotaRegistration *openAIResponsesWSQuotaRegistration
+	if h.cfg != nil &&
+		h.cfg.RunMode == config.RunModeStandard &&
+		apiKey.Quota > 0 &&
+		h.responsesWSQuotaMonitor != nil {
+		quotaRegistration = h.responsesWSQuotaMonitor.register(apiKey.ID, apiKey.Key, cancelProxy)
+		if quotaRegistration != nil {
+			defer quotaRegistration.unregister()
+		}
+	}
+
 	sessionHash := h.gatewayService.GenerateSessionHashWithFallback(
 		c,
 		firstMessage,
@@ -1421,17 +1469,30 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		wsFirstMessage = h.gatewayService.ReplaceModelInBody(firstMessage, channelMappingWS.MappedModel)
 	}
 
-	if err := h.gatewayService.ProxyResponsesWebSocketFromClient(ctx, c, wsConn, account, token, wsFirstMessage, hooks); err != nil {
+	proxyErr := h.gatewayService.ProxyResponsesWebSocketFromClient(proxyCtx, c, wsConn, account, token, wsFirstMessage, hooks)
+	quotaTriggered := false
+	if quotaRegistration != nil {
+		quotaRegistration.unregister()
+		quotaTriggered = quotaRegistration.wasTriggered()
+	}
+	quotaExhausted := quotaTriggered || errors.Is(context.Cause(proxyCtx), errOpenAIResponsesWSQuotaExhausted)
+	cancelProxy(nil)
+	if quotaExhausted {
+		reqLog.Info("openai.websocket_quota_exhausted_disconnect", zap.Int64("account_id", account.ID))
+		return
+	}
+
+	if proxyErr != nil {
 		h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
-		closeStatus, closeReason := summarizeWSCloseErrorForLog(err)
+		closeStatus, closeReason := summarizeWSCloseErrorForLog(proxyErr)
 		reqLog.Warn("openai.websocket_proxy_failed",
 			zap.Int64("account_id", account.ID),
-			zap.Error(err),
+			zap.Error(proxyErr),
 			zap.String("close_status", closeStatus),
 			zap.String("close_reason", closeReason),
 		)
 		var closeErr *service.OpenAIWSClientCloseError
-		if errors.As(err, &closeErr) {
+		if errors.As(proxyErr, &closeErr) {
 			closeOpenAIClientWS(wsConn, closeErr.StatusCode(), closeErr.Reason())
 			return
 		}

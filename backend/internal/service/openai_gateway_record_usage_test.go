@@ -83,12 +83,15 @@ func (s *openAIRecordUsageSubRepoStub) IncrementUsage(ctx context.Context, id in
 }
 
 type openAIRecordUsageAPIKeyQuotaStub struct {
-	quotaCalls          int
-	rateLimitCalls      int
-	err                 error
-	lastAmount          float64
-	lastQuotaCtxErr     error
-	lastRateLimitCtxErr error
+	quotaCalls           int
+	rateLimitCalls       int
+	invalidateCalls      int
+	err                  error
+	lastAmount           float64
+	lastInvalidatedKey   string
+	lastQuotaCtxErr      error
+	lastRateLimitCtxErr  error
+	lastInvalidateCtxErr error
 }
 
 func (s *openAIRecordUsageAPIKeyQuotaStub) UpdateQuotaUsed(ctx context.Context, apiKeyID int64, cost float64) error {
@@ -103,6 +106,12 @@ func (s *openAIRecordUsageAPIKeyQuotaStub) UpdateRateLimitUsage(ctx context.Cont
 	s.lastAmount = cost
 	s.lastRateLimitCtxErr = ctx.Err()
 	return s.err
+}
+
+func (s *openAIRecordUsageAPIKeyQuotaStub) InvalidateAuthCacheByKey(ctx context.Context, key string) {
+	s.invalidateCalls++
+	s.lastInvalidatedKey = key
+	s.lastInvalidateCtxErr = ctx.Err()
 }
 
 type openAIUserGroupRateRepoStub struct {
@@ -524,6 +533,48 @@ func TestOpenAIGatewayServiceRecordUsage_BillingRepoUsesDetachedContext(t *testi
 	require.NoError(t, billingRepo.lastCtxErr)
 	require.Equal(t, 1, usageRepo.calls)
 	require.NoError(t, usageRepo.lastCtxErr)
+}
+
+func TestOpenAIGatewayServiceRecordUsage_QuotaCrossingInvalidatesAPIKeyAuthCache(t *testing.T) {
+	usageRepo := &openAIRecordUsageLogRepoStub{}
+	billingRepo := &openAIRecordUsageBillingRepoStub{result: &UsageBillingApplyResult{
+		Applied:              true,
+		APIKeyQuotaExhausted: true,
+	}}
+	quotaSvc := &openAIRecordUsageAPIKeyQuotaStub{}
+	svc := newOpenAIRecordUsageServiceWithBillingRepoForTest(
+		usageRepo,
+		billingRepo,
+		&openAIRecordUsageUserRepoStub{},
+		&openAIRecordUsageSubRepoStub{},
+		nil,
+	)
+
+	err := svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
+		Result: &OpenAIForwardResult{
+			RequestID: "resp_quota_crossing",
+			Usage: OpenAIUsage{
+				InputTokens:  8,
+				OutputTokens: 4,
+			},
+			Model:    "gpt-5.1",
+			Duration: time.Second,
+		},
+		APIKey: &APIKey{
+			ID:    10051,
+			Key:   "sk-quota-crossing",
+			Quota: 100,
+		},
+		User:          &User{ID: 20051},
+		Account:       &Account{ID: 30051},
+		APIKeyService: quotaSvc,
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 1, billingRepo.calls)
+	require.Equal(t, 1, quotaSvc.invalidateCalls)
+	require.Equal(t, "sk-quota-crossing", quotaSvc.lastInvalidatedKey)
+	require.NoError(t, quotaSvc.lastInvalidateCtxErr)
 }
 
 func TestOpenAIGatewayServiceRecordUsage_BillingFingerprintIncludesRequestPayloadHash(t *testing.T) {
