@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"testing"
 
+	pkgerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
 )
@@ -51,6 +52,18 @@ func TestBillingErrorDetails_MapsSubscriptionUsageLimitsToTooManyRequests(t *tes
 		require.NotEmpty(t, msg)
 		require.Zero(t, retryAfter)
 	}
+}
+
+func TestBillingErrorDetails_MapsClonedSubscriptionLimitErrorToTooManyRequests(t *testing.T) {
+	// A repository/cache boundary may clone the application error rather than
+	// returning the package sentinel. The HTTP reason must still preserve the
+	// quota response contract.
+	err := pkgerrors.New(http.StatusTooManyRequests, "DAILY_LIMIT_EXCEEDED", "daily usage limit exceeded")
+	status, code, msg, retryAfter := billingErrorDetails(err)
+	require.Equal(t, http.StatusTooManyRequests, status)
+	require.Equal(t, "USAGE_LIMIT_EXCEEDED", code)
+	require.Equal(t, "daily usage limit exceeded", msg)
+	require.Zero(t, retryAfter)
 }
 
 func TestBillingErrorDetails_BillingServiceUnavailableMapsTo503(t *testing.T) {

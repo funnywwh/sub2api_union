@@ -1750,9 +1750,7 @@ func billingErrorDetails(err error) (status int, code, message string, retryAfte
 	// Subscription usage limits are hard request admission limits. Keep them
 	// distinct from generic billing failures so clients can treat a depleted
 	// subscription as a quota response instead of retrying the upstream.
-	if errors.Is(err, service.ErrDailyLimitExceeded) ||
-		errors.Is(err, service.ErrWeeklyLimitExceeded) ||
-		errors.Is(err, service.ErrMonthlyLimitExceeded) {
+	if isSubscriptionUsageLimitError(err) {
 		msg := pkgerrors.Message(err)
 		return http.StatusTooManyRequests, "USAGE_LIMIT_EXCEEDED", msg, 0
 	}
@@ -1765,6 +1763,30 @@ func billingErrorDetails(err error) (status int, code, message string, retryAfte
 		msg = "Billing error"
 	}
 	return http.StatusForbidden, "billing_error", msg, 0
+}
+
+// isSubscriptionUsageLimitError recognizes subscription limit errors across
+// repository/service boundaries. Some paths return a cloned or serialized
+// ApplicationError, so errors.Is alone is not sufficient even though the
+// HTTP status and reason still identify the same admission failure.
+func isSubscriptionUsageLimitError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, service.ErrDailyLimitExceeded) ||
+		errors.Is(err, service.ErrWeeklyLimitExceeded) ||
+		errors.Is(err, service.ErrMonthlyLimitExceeded) {
+		return true
+	}
+	if pkgerrors.Code(err) != http.StatusTooManyRequests {
+		return false
+	}
+	switch pkgerrors.Reason(err) {
+	case "DAILY_LIMIT_EXCEEDED", "WEEKLY_LIMIT_EXCEEDED", "MONTHLY_LIMIT_EXCEEDED":
+		return true
+	default:
+		return false
+	}
 }
 
 func (h *GatewayHandler) metadataBridgeEnabled() bool {
