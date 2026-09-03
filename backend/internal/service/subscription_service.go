@@ -842,13 +842,17 @@ func (s *SubscriptionService) ValidateAndCheckLimits(sub *UserSubscription, grou
 	}
 
 	// 3. 检查用量限额
-	if !sub.CheckDailyLimit(group, 0) {
+	// A request must be rejected once the current window has reached its
+	// configured limit. CheckDailyLimit intentionally uses <= for reservation
+	// calculations (a request may consume the exact remaining amount), so the
+	// zero-cost admission check needs an explicit >= comparison here.
+	if group.HasDailyLimit() && sub.DailyUsageUSD >= *group.DailyLimitUSD {
 		return needsMaintenance, ErrDailyLimitExceeded
 	}
-	if !sub.CheckWeeklyLimit(group, 0) {
+	if group.HasWeeklyLimit() && sub.WeeklyUsageUSD >= *group.WeeklyLimitUSD {
 		return needsMaintenance, ErrWeeklyLimitExceeded
 	}
-	if !sub.CheckMonthlyLimit(group, 0) {
+	if group.HasMonthlyLimit() && sub.MonthlyUsageUSD >= *group.MonthlyLimitUSD {
 		return needsMaintenance, ErrMonthlyLimitExceeded
 	}
 

@@ -1747,6 +1747,15 @@ func billingErrorDetails(err error) (status int, code, message string, retryAfte
 		retrySeconds := 60 - int(time.Now().Unix()%60)
 		return http.StatusTooManyRequests, "rate_limit_exceeded", msg, retrySeconds
 	}
+	// Subscription usage limits are hard request admission limits. Keep them
+	// distinct from generic billing failures so clients can treat a depleted
+	// subscription as a quota response instead of retrying the upstream.
+	if errors.Is(err, service.ErrDailyLimitExceeded) ||
+		errors.Is(err, service.ErrWeeklyLimitExceeded) ||
+		errors.Is(err, service.ErrMonthlyLimitExceeded) {
+		msg := pkgerrors.Message(err)
+		return http.StatusTooManyRequests, "USAGE_LIMIT_EXCEEDED", msg, 0
+	}
 	msg := pkgerrors.Message(err)
 	if msg == "" {
 		logger.L().With(
