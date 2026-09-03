@@ -7658,6 +7658,9 @@ func applyUsageBilling(ctx context.Context, requestID string, usageLog *UsageLog
 
 	result, err := repo.Apply(billingCtx, cmd)
 	if err != nil {
+		if isSubscriptionUsageLimitError(err) && p.IsSubscriptionBill && p.User != nil && p.APIKey != nil && p.APIKey.GroupID != nil && deps.billingCacheService != nil {
+			deps.billingCacheService.QueueInvalidateSubscription(p.User.ID, *p.APIKey.GroupID)
+		}
 		return false, err
 	}
 
@@ -7674,6 +7677,12 @@ func applyUsageBilling(ctx context.Context, requestID string, usageLog *UsageLog
 
 	finalizePostUsageBilling(p, deps, result)
 	return true, nil
+}
+
+func isSubscriptionUsageLimitError(err error) bool {
+	return errors.Is(err, ErrDailyLimitExceeded) ||
+		errors.Is(err, ErrWeeklyLimitExceeded) ||
+		errors.Is(err, ErrMonthlyLimitExceeded)
 }
 
 func finalizePostUsageBilling(p *postUsageBillingParams, deps *billingDeps, result *UsageBillingApplyResult) {

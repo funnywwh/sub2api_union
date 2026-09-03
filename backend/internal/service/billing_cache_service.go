@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"sync"
@@ -825,8 +826,66 @@ func (s *BillingCacheService) checkBalanceEligibility(ctx context.Context, userI
 
 // checkSubscriptionEligibility 检查订阅模式资格
 func (s *BillingCacheService) checkSubscriptionEligibility(ctx context.Context, userID int64, group *Group, subscription *UserSubscription) error {
-	// 获取订阅缓存数据
-	subData, err := s.GetSubscriptionStatus(ctx, userID, group.ID)
+	// 订阅额度是请求放行的最终依据，不能使用可能滞后的 Redis/L1 缓存。
+	// 直接读取当前有效订阅；缓存仍保留给其它非关键路径使用。
+	var subData *subscriptionCacheData
+	var err error
+	if subscription != nil && s.subRepo != nil && subscription.ID > 0 {
+		fresh, freshErr := s.subRepo.GetActiveByUserIDAndGroupID(ctx, userID, group.ID)
+		if freshErr != nil {
+			if errors.Is(freshErr, ErrSubscriptionNotFound) {
+				return ErrSubscriptionInvalid
+			}
+			err = freshErr
+		} else if fresh == nil {
+			return ErrSubscriptionInvalid
+		} else {
+			dailyUsage := fresh.DailyUsageUSD
+			weeklyUsage := fresh.WeeklyUsageUSD
+			monthlyUsage := fresh.MonthlyUsageUSD
+			if fresh.NeedsDailyReset() {
+				dailyUsage = 0
+			}
+			if fresh.NeedsWeeklyReset() {
+				weeklyUsage = 0
+			}
+			if fresh.NeedsMonthlyReset() {
+				monthlyUsage = 0
+			}
+			subData = &subscriptionCacheData{
+				Status:       fresh.Status,
+				ExpiresAt:    fresh.ExpiresAt,
+				DailyUsage:   dailyUsage,
+				WeeklyUsage:  weeklyUsage,
+				MonthlyUsage: monthlyUsage,
+				Version:      fresh.UpdatedAt.Unix(),
+			}
+		}
+	} else if subscription != nil {
+		// 兼容未注入 repository 的轻量测试/嵌入式调用方。
+		dailyUsage := subscription.DailyUsageUSD
+		weeklyUsage := subscription.WeeklyUsageUSD
+		monthlyUsage := subscription.MonthlyUsageUSD
+		if subscription.NeedsDailyReset() {
+			dailyUsage = 0
+		}
+		if subscription.NeedsWeeklyReset() {
+			weeklyUsage = 0
+		}
+		if subscription.NeedsMonthlyReset() {
+			monthlyUsage = 0
+		}
+		subData = &subscriptionCacheData{
+			Status:       subscription.Status,
+			ExpiresAt:    subscription.ExpiresAt,
+			DailyUsage:   dailyUsage,
+			WeeklyUsage:  weeklyUsage,
+			MonthlyUsage: monthlyUsage,
+			Version:      subscription.UpdatedAt.Unix(),
+		}
+	} else {
+		subData, err = s.GetSubscriptionStatus(ctx, userID, group.ID)
+	}
 	if err != nil {
 		if s.circuitBreaker != nil {
 			s.circuitBreaker.OnFailure(err)

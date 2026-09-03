@@ -133,7 +133,11 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
 		isSubscriptionType := apiKey.Group != nil && apiKey.Group.IsSubscriptionType()
 
 		if isSubscriptionType && subscriptionService != nil {
-			sub, subErr := subscriptionService.GetActiveSubscription(
+			loadSubscription := subscriptionService.GetActiveSubscription
+			if apiKey.Group.HasDailyLimit() || apiKey.Group.HasWeeklyLimit() || apiKey.Group.HasMonthlyLimit() {
+				loadSubscription = subscriptionService.GetActiveSubscriptionFresh
+			}
+			sub, subErr := loadSubscription(
 				c.Request.Context(),
 				apiKey.User.ID,
 				apiKey.Group.ID,

@@ -71,7 +71,11 @@ func APIKeyAuthWithSubscriptionGoogle(apiKeyService *service.APIKeyService, subs
 
 		isSubscriptionType := apiKey.Group != nil && apiKey.Group.IsSubscriptionType()
 		if isSubscriptionType && subscriptionService != nil {
-			subscription, err := subscriptionService.GetActiveSubscription(
+			loadSubscription := subscriptionService.GetActiveSubscription
+			if apiKey.Group.HasDailyLimit() || apiKey.Group.HasWeeklyLimit() || apiKey.Group.HasMonthlyLimit() {
+				loadSubscription = subscriptionService.GetActiveSubscriptionFresh
+			}
+			subscription, err := loadSubscription(
 				c.Request.Context(),
 				apiKey.User.ID,
 				apiKey.Group.ID,

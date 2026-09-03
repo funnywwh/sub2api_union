@@ -600,6 +600,16 @@ func (s *SubscriptionService) GetActiveSubscription(ctx context.Context, userID,
 	return &cp, nil
 }
 
+// GetActiveSubscriptionFresh reads the current subscription directly from the
+// repository. Request admission for groups with usage limits must use this
+// path so a stale L1 cache cannot continue to admit over-quota requests.
+func (s *SubscriptionService) GetActiveSubscriptionFresh(ctx context.Context, userID, groupID int64) (*UserSubscription, error) {
+	if s == nil || s.userSubRepo == nil {
+		return nil, ErrSubscriptionNotFound
+	}
+	return s.userSubRepo.GetActiveByUserIDAndGroupID(ctx, userID, groupID)
+}
+
 // ListUserSubscriptions 获取用户的所有订阅
 func (s *SubscriptionService) ListUserSubscriptions(ctx context.Context, userID int64) ([]UserSubscription, error) {
 	subs, err := s.userSubRepo.ListByUserID(ctx, userID)

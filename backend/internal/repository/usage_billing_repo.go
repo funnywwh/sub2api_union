@@ -52,6 +52,18 @@ func (r *usageBillingRepository) Apply(ctx context.Context, cmd *service.UsageBi
 
 	result := &service.UsageBillingApplyResult{Applied: true}
 	if err := r.applyUsageBillingEffects(ctx, tx, cmd, result); err != nil {
+		// A limit failure rolls back the billing transaction by design. Persist a
+		// conservative cap after rollback so requests whose cost is larger than
+		// the remaining allowance cannot repeatedly pass the cached pre-check.
+		if rollbackErr := tx.Rollback(); rollbackErr != nil {
+			logger.LegacyPrintf("repository.usage_billing", "rollback after billing failure: %v", rollbackErr)
+		}
+		tx = nil
+		if cmd.SubscriptionID != nil && cmd.SubscriptionCost > 0 && isSubscriptionLimitError(err) {
+			if capErr := capSubscriptionUsage(ctx, r.db, *cmd.SubscriptionID, err); capErr != nil {
+				logger.LegacyPrintf("repository.usage_billing", "cap subscription usage after limit failure: %v", capErr)
+			}
+		}
 		return nil, err
 	}
 
@@ -60,6 +72,12 @@ func (r *usageBillingRepository) Apply(ctx context.Context, cmd *service.UsageBi
 	}
 	tx = nil
 	return result, nil
+}
+
+func isSubscriptionLimitError(err error) bool {
+	return errors.Is(err, service.ErrDailyLimitExceeded) ||
+		errors.Is(err, service.ErrWeeklyLimitExceeded) ||
+		errors.Is(err, service.ErrMonthlyLimitExceeded)
 }
 
 func (r *usageBillingRepository) claimUsageBillingKey(ctx context.Context, tx *sql.Tx, cmd *service.UsageBillingCommand) (bool, error) {

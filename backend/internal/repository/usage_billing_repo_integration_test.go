@@ -209,7 +209,19 @@ func TestUsageBillingRepositoryApply_RejectsSubscriptionLimitOverrun(t *testing.
 
 	var dailyUsage float64
 	require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT daily_usage_usd FROM user_subscriptions WHERE id = $1", subscription.ID).Scan(&dailyUsage))
-	require.InDelta(t, 0.75, dailyUsage, 0.000001)
+	require.InDelta(t, 1.00, dailyUsage, 0.000001)
+
+	// The rejected billing transaction must not claim the request as applied,
+	// while the conservative cap prevents the stale remaining allowance from
+	// admitting the same over-limit request repeatedly.
+	_, err = repo.Apply(ctx, &service.UsageBillingCommand{
+		RequestID:        uuid.NewString(),
+		APIKeyID:         apiKey.ID,
+		UserID:           user.ID,
+		SubscriptionID:   &subscription.ID,
+		SubscriptionCost: 0.50,
+	})
+	require.ErrorIs(t, err, service.ErrDailyLimitExceeded)
 }
 
 func TestUsageBillingRepositoryApply_RequestFingerprintConflict(t *testing.T) {

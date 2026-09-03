@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -153,4 +154,48 @@ func incrementSubscriptionUsageAtomically(ctx context.Context, db subscriptionUs
 		return service.ErrMonthlyLimitExceeded
 	}
 	return service.ErrSubscriptionNotFound
+}
+
+// capSubscriptionUsage records that a subscription has no remaining capacity
+// after a request was rejected by the atomic billing check. This runs in a
+// separate transaction because the original billing transaction must roll back
+// all effects, including its idempotency claim.
+func capSubscriptionUsage(ctx context.Context, db subscriptionUsageExecutor, subscriptionID int64, limitErr error) error {
+	if db == nil || !isSubscriptionLimitError(limitErr) {
+		return nil
+	}
+
+	const common = `
+		UPDATE user_subscriptions us
+		SET %s = GREATEST(COALESCE(us.%s, 0), g.%s), updated_at = NOW()
+		FROM groups g
+		WHERE us.id = $1
+			AND us.deleted_at IS NULL
+			AND us.group_id = g.id
+			AND g.deleted_at IS NULL
+			AND g.%s > 0
+			AND us.%s IS NOT NULL
+			AND us.%s + %s > NOW()
+			AND COALESCE(us.%s, 0) < g.%s
+	`
+
+	var query string
+	switch {
+	case errors.Is(limitErr, service.ErrDailyLimitExceeded):
+		query = fmt.Sprintf(common,
+			"daily_usage_usd", "daily_usage_usd", "daily_limit_usd", "daily_limit_usd",
+			"daily_window_start", "daily_window_start", "INTERVAL '24 hours'", "daily_usage_usd", "daily_limit_usd")
+	case errors.Is(limitErr, service.ErrWeeklyLimitExceeded):
+		query = fmt.Sprintf(common,
+			"weekly_usage_usd", "weekly_usage_usd", "weekly_limit_usd", "weekly_limit_usd",
+			"weekly_window_start", "weekly_window_start", "INTERVAL '7 days'", "weekly_usage_usd", "weekly_limit_usd")
+	case errors.Is(limitErr, service.ErrMonthlyLimitExceeded):
+		query = fmt.Sprintf(common,
+			"monthly_usage_usd", "monthly_usage_usd", "monthly_limit_usd", "monthly_limit_usd",
+			"monthly_window_start", "monthly_window_start", "INTERVAL '30 days'", "monthly_usage_usd", "monthly_limit_usd")
+	default:
+		return nil
+	}
+	_, err := db.ExecContext(ctx, query, subscriptionID)
+	return err
 }
