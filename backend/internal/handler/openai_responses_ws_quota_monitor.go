@@ -19,6 +19,8 @@ var (
 
 type openAIResponsesWSQuotaLoader func(context.Context, string) (*service.APIKey, error)
 
+type openAIResponsesWSSubscriptionLoader func(context.Context, int64, int64) (*service.UserSubscription, error)
+
 type openAIResponsesWSQuotaFailureLogger func(apiKeyID int64, err error)
 
 type openAIResponsesWSQuotaScanFunc func(context.Context)
@@ -42,6 +44,7 @@ type openAIResponsesWSQuotaMonitor struct {
 	nextToken      uint64
 
 	loader     openAIResponsesWSQuotaLoader
+	subLoader  openAIResponsesWSSubscriptionLoader
 	logFailure openAIResponsesWSQuotaFailureLogger
 	scan       openAIResponsesWSQuotaScanFunc
 
@@ -80,6 +83,7 @@ type openAIResponsesWSQuotaTarget struct {
 func newOpenAIResponsesWSQuotaMonitor(
 	loader openAIResponsesWSQuotaLoader,
 	logFailure openAIResponsesWSQuotaFailureLogger,
+	subLoaders ...openAIResponsesWSSubscriptionLoader,
 ) *openAIResponsesWSQuotaMonitor {
 	scanCtx, scanCancel := context.WithCancel(context.Background())
 	m := &openAIResponsesWSQuotaMonitor{
@@ -88,6 +92,9 @@ func newOpenAIResponsesWSQuotaMonitor(
 		logFailure: logFailure,
 		scanCtx:    scanCtx,
 		scanCancel: scanCancel,
+	}
+	if len(subLoaders) > 0 {
+		m.subLoader = subLoaders[0]
 	}
 	m.scan = m.scanOnce
 	return m
@@ -255,13 +262,66 @@ func (m *openAIResponsesWSQuotaMonitor) scanOnce(ctx context.Context) {
 			continue
 		}
 
+		exhausted := apiKey.Status == service.StatusAPIKeyQuotaExhausted || apiKey.IsQuotaExhausted()
+		if !exhausted && m.shouldCheckSubscription(apiKey) {
+			if m.subLoader == nil || apiKey.GroupID == nil || apiKey.UserID <= 0 {
+				// A missing optional subscription loader should not turn the
+				// monitor into a fail-closed admission path.
+				m.clearFailure(target)
+				m.markActive(target)
+				continue
+			}
+			subCtx, subCancel := context.WithTimeout(ctx, openAIResponsesWSQuotaLoaderTimeout)
+			subscription, subErr := m.subLoader(subCtx, apiKey.UserID, *apiKey.GroupID)
+			subCancel()
+			if subErr != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				m.recordFailure(target, subErr)
+				continue
+			}
+			exhausted = subscriptionQuotaExhausted(subscription, apiKey.Group)
+		}
+
 		m.clearFailure(target)
-		if apiKey.Status == service.StatusAPIKeyQuotaExhausted || apiKey.IsQuotaExhausted() {
+		if exhausted {
 			m.trigger(target)
 		} else {
 			m.markActive(target)
 		}
 	}
+}
+
+func (m *openAIResponsesWSQuotaMonitor) shouldCheckSubscription(apiKey *service.APIKey) bool {
+	if apiKey == nil || apiKey.Group == nil || !apiKey.Group.IsSubscriptionType() {
+		return false
+	}
+	return apiKey.Group.HasDailyLimit() || apiKey.Group.HasWeeklyLimit() || apiKey.Group.HasMonthlyLimit()
+}
+
+func subscriptionQuotaExhausted(subscription *service.UserSubscription, group *service.Group) bool {
+	if subscription == nil || group == nil {
+		return false
+	}
+	if subscription.Status != service.SubscriptionStatusActive || subscription.IsExpired() {
+		return true
+	}
+	dailyUsage := subscription.DailyUsageUSD
+	weeklyUsage := subscription.WeeklyUsageUSD
+	monthlyUsage := subscription.MonthlyUsageUSD
+	if subscription.NeedsDailyReset() {
+		dailyUsage = 0
+	}
+	if subscription.NeedsWeeklyReset() {
+		weeklyUsage = 0
+	}
+	if subscription.NeedsMonthlyReset() {
+		monthlyUsage = 0
+	}
+	return (group.HasDailyLimit() && dailyUsage >= *group.DailyLimitUSD) ||
+		(group.HasWeeklyLimit() && weeklyUsage >= *group.WeeklyLimitUSD) ||
+		(group.HasMonthlyLimit() && monthlyUsage >= *group.MonthlyLimitUSD)
 }
 
 func (m *openAIResponsesWSQuotaMonitor) snapshotTargets() []openAIResponsesWSQuotaTarget {

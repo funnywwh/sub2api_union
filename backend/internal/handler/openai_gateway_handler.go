@@ -43,6 +43,18 @@ const (
 	openAIResponsesWSQuotaMonitorInterval = 30 * time.Second
 )
 
+func shouldMonitorOpenAIResponsesWSQuota(apiKey *service.APIKey) bool {
+	if apiKey == nil {
+		return false
+	}
+	if apiKey.Quota > 0 {
+		return true
+	}
+	group := apiKey.Group
+	return group != nil && group.IsSubscriptionType() &&
+		(group.HasDailyLimit() || group.HasWeeklyLimit() || group.HasMonthlyLimit())
+}
+
 func resolveOpenAIForwardDefaultMappedModel(apiKey *service.APIKey, fallbackModel string) string {
 	if fallbackModel = strings.TrimSpace(fallbackModel); fallbackModel != "" {
 		return fallbackModel
@@ -91,6 +103,7 @@ func NewOpenAIGatewayHandler(
 	concurrencyService *service.ConcurrencyService,
 	billingCacheService *service.BillingCacheService,
 	apiKeyService *service.APIKeyService,
+	subscriptionService *service.SubscriptionService,
 	timingWheelService *service.TimingWheelService,
 	usageRecordWorkerPool *service.UsageRecordWorkerPool,
 	errorPassthroughService *service.ErrorPassthroughService,
@@ -105,6 +118,10 @@ func NewOpenAIGatewayHandler(
 			maxAccountSwitches = cfg.Gateway.MaxAccountSwitches
 		}
 		if cfg.RunMode == config.RunModeStandard && apiKeyService != nil && timingWheelService != nil {
+			var subscriptionLoader openAIResponsesWSSubscriptionLoader
+			if subscriptionService != nil {
+				subscriptionLoader = subscriptionService.GetActiveSubscriptionFresh
+			}
 			responsesWSQuotaMonitor = newOpenAIResponsesWSQuotaMonitor(
 				apiKeyService.GetByKey,
 				func(apiKeyID int64, err error) {
@@ -114,6 +131,7 @@ func NewOpenAIGatewayHandler(
 						zap.Error(err),
 					)
 				},
+				subscriptionLoader,
 			)
 			timingWheelService.ScheduleRecurring(
 				openAIResponsesWSQuotaMonitorTaskName,
@@ -1314,7 +1332,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 	var quotaRegistration *openAIResponsesWSQuotaRegistration
 	if h.cfg != nil &&
 		h.cfg.RunMode == config.RunModeStandard &&
-		apiKey.Quota > 0 &&
+		shouldMonitorOpenAIResponsesWSQuota(apiKey) &&
 		h.responsesWSQuotaMonitor != nil {
 		quotaRegistration = h.responsesWSQuotaMonitor.register(apiKey.ID, apiKey.Key, cancelProxy)
 		if quotaRegistration != nil {

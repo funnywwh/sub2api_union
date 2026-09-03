@@ -12,6 +12,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func float64Ptr(v float64) *float64 { return &v }
+
+func int64Ptr(v int64) *int64 { return &v }
+
 func TestOpenAIResponsesWSQuotaMonitor_ScanLoadsOncePerAPIKeyAndCancelsWholeGroup(t *testing.T) {
 	var mu sync.Mutex
 	loadCount := make(map[string]int)
@@ -70,6 +74,39 @@ func TestOpenAIResponsesWSQuotaMonitor_ExplicitExhaustedStatusCancelsUnlimitedKe
 
 	ctx, cancel := context.WithCancelCause(context.Background())
 	registration := monitor.register(101, "sk-explicit-status", cancel)
+	monitor.scanOnce(context.Background())
+
+	require.ErrorIs(t, context.Cause(ctx), errOpenAIResponsesWSQuotaExhausted)
+	require.True(t, registration.wasTriggered())
+}
+
+func TestOpenAIResponsesWSQuotaMonitor_SubscriptionLimitCancelsUnlimitedKey(t *testing.T) {
+	group := &service.Group{
+		SubscriptionType: service.SubscriptionTypeSubscription,
+		DailyLimitUSD:    float64Ptr(40),
+	}
+	monitor := newOpenAIResponsesWSQuotaMonitor(
+		func(context.Context, string) (*service.APIKey, error) {
+			return &service.APIKey{
+				ID:      101,
+				UserID:  7,
+				GroupID: int64Ptr(3),
+				Quota:   0,
+				Group:   group,
+			}, nil
+		},
+		nil,
+		func(context.Context, int64, int64) (*service.UserSubscription, error) {
+			return &service.UserSubscription{
+				Status:        service.SubscriptionStatusActive,
+				DailyUsageUSD: 40,
+				ExpiresAt:     time.Now().Add(time.Hour),
+			}, nil
+		},
+	)
+
+	ctx, cancel := context.WithCancelCause(context.Background())
+	registration := monitor.register(101, "sk-subscription-exhausted", cancel)
 	monitor.scanOnce(context.Background())
 
 	require.ErrorIs(t, context.Cause(ctx), errOpenAIResponsesWSQuotaExhausted)
